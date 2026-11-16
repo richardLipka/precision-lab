@@ -59,3 +59,22 @@ describe('cs/en parity', () => {
     expect(missing).toEqual([]);
   });
 });
+
+import { BIB, EXAMPLE_REFS } from '../src/ui/references.js';
+
+describe('example references', () => {
+  it('point to existing bibliography entries with a link, for existing examples', () => {
+    const ids = new Set(EXAMPLES.map((e) => e.id));
+    for (const [ex, refs] of Object.entries(EXAMPLE_REFS)) {
+      expect(ids.has(ex), ex).toBe(true);
+      for (const r of refs) {
+        const b = BIB[r.id];
+        expect(b, `${ex}: ${r.id}`).toBeTruthy();
+        expect(b.doi || b.url, r.id).toBeTruthy();
+        expect(['origin', 'version', 'analysis', 'background']).toContain(r.role);
+        expect(DICT.en['refs.' + r.role] && DICT.cs['refs.' + r.role]).toBeTruthy();
+        if (r.note) expect(r.note.en && r.note.cs, `${ex}: ${r.id} note`).toBeTruthy();
+      }
+    }
+  });
+});

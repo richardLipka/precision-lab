@@ -80,6 +80,33 @@ doprava, jak je napsáno: `a + b + c` znamená `(a + b) + c`.
 * logistické zobrazení
 * Kahanovo sčítání, jednoprůchodový rozptyl a sin(10²²)
 
+## Zdroje příkladů
+
+Každý příklad zobrazuje své zdroje přímo v aplikaci. „Původní publikace“ je místo, kde se příklad (nebo jeho
+myšlenka) objevil poprvé; ostatní zdroje jev vysvětlují. Všechny DOI byly ověřeny v Crossrefu.
+
+| Příklad | Zdroje |
+|---|---|
+| 0.1 + 0.2, chyba reprezentace, katastrofické krácení | Goldberg 1991 [1] |
+| Sčítání není asociativní | Goldberg 1991 [1] (tentýž příklad s ±10³⁰) |
+| Desetkrát přičíst 0.1, harmonický součet | Higham 2002 [2], kapitola 4 |
+| Jednoprůchodový rozptyl | Welford 1962 [3] (stabilní alternativa), Chan, Golub a LeVeque 1983 [4] |
+| Rumpův příklad (obě podoby) | Rump 1988 [5], rozbor Loh a Walster 2002 [6] |
+| Mullerova rekurence | Muller 1989 [7] (tam u₀ = 11/2, u₁ = 61/11), tato podoba Muller a kol. 2018 [8], rozbor Rump 2020 [9] |
+| Fúzované násobení a sčítání | Montoye, Hokenek a Runyon 1990 [10], Ogita, Rump a Oishi 2005 [11] |
+| Přetečení a podtečení | IEEE 754-2019 [12] |
+| Taylorova řada e⁻²⁰, kvadratická rovnice | Forsythe 1970 [13]; Goldberg 1991 [1] |
+| Jehlový trojúhelník | Kahan 2014 [14] (délky stran naše vlastní), Goldberg 1991 [1] |
+| (1 − cos x)/x² | Higham 2002 [2], kapitola 1 |
+| Složené úročení | Goldberg 1991 [1] (tam s denním úročením, n = 365) |
+| Rekurence se zlatým řezem | Press a kol. 1992 [15], §1.3 |
+| Logistické zobrazení | May 1976 [16] |
+| Kahanovo sčítání | Kahan 1965 [17], Goldberg 1991 [1] |
+| sin obrovského argumentu | Payne a Hanek 1983 [18] |
+| Iₙ = 1/n − 5·Iₙ₋₁ | běžné učebnicové cvičení; původní publikaci se dohledat nepodařilo |
+
+Úplný seznam literatury (čísla [1]–[18]) je v [anglické verzi](README.md#sources-of-the-examples).
+
 ## Jak přesné je „přesně“?
 
 * **Racionální hodnoty jsou přesné.** Používají [fraction.js](https://github.com/rawify/Fraction.js)
@@ -95,7 +122,7 @@ doprava, jak je napsáno: `a + b + c` znamená `(a + b) + c`.
 
 ## Ověření
 
-`npm test` (137 testů) porovnává simulátor s nezávislými implementacemi:
+`npm test` (143 testů včetně kouřového testu stránky v happy-dom) porovnává simulátor s nezávislými implementacemi:
 * binary64 s nativními doubly JavaScriptu: + − × ÷, speciální hodnoty, převod desetinných čísel a
   nejkratší zpětně převoditelný výpis
 * binary32 s `Math.fround`, binary16 s `Math.f16round`

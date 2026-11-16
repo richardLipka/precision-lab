@@ -79,6 +79,50 @@ as written, so `a + b + c` means `(a + b) + c`.
 * the logistic map
 * Kahan summation, one-pass variance and sin(10²²)
 
+## Sources of the examples
+
+Each example shows its sources in the app. "Original" means the publication where the example (or its
+idea) appeared first; the others explain the effect. All DOIs were checked against Crossref.
+
+| Example | Sources |
+|---|---|
+| 0.1 + 0.2, representation error, catastrophic cancellation | Goldberg 1991 [1] |
+| Addition is not associative | Goldberg 1991 [1] (the same example with ±10³⁰) |
+| Adding 0.1 ten times, harmonic sum | Higham 2002 [2], chapter 4 |
+| One-pass variance | Welford 1962 [3] (stable alternative), Chan, Golub & LeVeque 1983 [4] |
+| Rump's example (both versions) | Rump 1988 [5], analysis Loh & Walster 2002 [6] |
+| Muller's recurrence | Muller 1989 [7] (there u₀ = 11/2, u₁ = 61/11), this version Muller et al. 2018 [8], analysis Rump 2020 [9] |
+| Fused multiply-add | Montoye, Hokenek & Runyon 1990 [10], Ogita, Rump & Oishi 2005 [11] |
+| Overflow and underflow | IEEE 754-2019 [12] |
+| Taylor series of e⁻²⁰, quadratic formula | Forsythe 1970 [13]; Goldberg 1991 [1] |
+| Needle-like triangle | Kahan 2014 [14] (our side lengths), Goldberg 1991 [1] |
+| (1 − cos x)/x² | Higham 2002 [2], chapter 1 |
+| Compound interest | Goldberg 1991 [1] (there with daily interest, n = 365) |
+| Golden-ratio recurrence | Press et al. 1992 [15], §1.3 |
+| Logistic map | May 1976 [16] |
+| Kahan summation | Kahan 1965 [17], Goldberg 1991 [1] |
+| sin of a huge argument | Payne & Hanek 1983 [18] |
+| Iₙ = 1/n − 5·Iₙ₋₁ | a common textbook exercise; no original publication could be traced |
+
+1. D. Goldberg: What every computer scientist should know about floating-point arithmetic. *ACM Computing Surveys* 23(1), 5–48, 1991. [doi:10.1145/103162.103163](https://doi.org/10.1145/103162.103163)
+2. N. J. Higham: *Accuracy and Stability of Numerical Algorithms*, 2nd ed. SIAM, 2002. [doi:10.1137/1.9780898718027](https://doi.org/10.1137/1.9780898718027)
+3. B. P. Welford: Note on a method for calculating corrected sums of squares and products. *Technometrics* 4(3), 419–420, 1962. [doi:10.1080/00401706.1962.10490022](https://doi.org/10.1080/00401706.1962.10490022)
+4. T. F. Chan, G. H. Golub, R. J. LeVeque: Algorithms for computing the sample variance: analysis and recommendations. *The American Statistician* 37(3), 242–247, 1983. [doi:10.1080/00031305.1983.10483115](https://doi.org/10.1080/00031305.1983.10483115)
+5. S. M. Rump: Algorithms for verified inclusions: theory and practice. In R. E. Moore (ed.), *Reliability in Computing*, Academic Press, 109–126, 1988. [doi:10.1016/B978-0-12-505630-4.50012-2](https://doi.org/10.1016/B978-0-12-505630-4.50012-2)
+6. E. Loh, G. W. Walster: Rump's example revisited. *Reliable Computing* 8(3), 245–248, 2002. [doi:10.1023/A:1015569431383](https://doi.org/10.1023/A:1015569431383)
+7. J.-M. Muller: *Arithmétique des ordinateurs*. Masson, Paris, 1989. [HAL ensl-00086707](https://ens-lyon.hal.science/ensl-00086707)
+8. J.-M. Muller et al.: *Handbook of Floating-Point Arithmetic*, 2nd ed. Birkhäuser, 2018. [doi:10.1007/978-3-319-76526-6](https://doi.org/10.1007/978-3-319-76526-6)
+9. S. M. Rump: On recurrences converging to the wrong limit in finite precision and some new examples. *Electronic Transactions on Numerical Analysis* 52, 358–369, 2020. [doi:10.1553/etna_vol52s358](https://doi.org/10.1553/etna_vol52s358)
+10. R. K. Montoye, E. Hokenek, S. L. Runyon: Design of the IBM RISC System/6000 floating-point execution unit. *IBM J. Res. Dev.* 34(1), 59–70, 1990. [doi:10.1147/rd.341.0059](https://doi.org/10.1147/rd.341.0059)
+11. T. Ogita, S. M. Rump, S. Oishi: Accurate sum and dot product. *SIAM J. Sci. Comput.* 26(6), 1955–1988, 2005. [doi:10.1137/030601818](https://doi.org/10.1137/030601818)
+12. IEEE Standard for Floating-Point Arithmetic, IEEE Std 754-2019. [doi:10.1109/IEEESTD.2019.8766229](https://doi.org/10.1109/IEEESTD.2019.8766229)
+13. G. E. Forsythe: Pitfalls in computation, or why a math book isn't enough. *The American Mathematical Monthly* 77(9), 931–956, 1970. [doi:10.1080/00029890.1970.11992636](https://doi.org/10.1080/00029890.1970.11992636)
+14. W. Kahan: Miscalculating area and angles of a needle-like triangle. Lecture notes, UC Berkeley, version of 4 September 2014. [PDF](https://people.eecs.berkeley.edu/~wkahan/Triangle.pdf)
+15. W. H. Press, S. A. Teukolsky, W. T. Vetterling, B. P. Flannery: *Numerical Recipes in C*, 2nd ed., §1.3 Error, accuracy, and stability. Cambridge University Press, 1992. [numerical.recipes](https://numerical.recipes/)
+16. R. M. May: Simple mathematical models with very complicated dynamics. *Nature* 261, 459–467, 1976. [doi:10.1038/261459a0](https://doi.org/10.1038/261459a0)
+17. W. Kahan: Further remarks on reducing truncation errors. *Communications of the ACM* 8(1), 40, 1965. [doi:10.1145/363707.363723](https://doi.org/10.1145/363707.363723)
+18. M. H. Payne, R. N. Hanek: Radian reduction for trigonometric functions. *ACM SIGNUM Newsletter* 18(1), 19–24, 1983. [doi:10.1145/1057600.1057602](https://doi.org/10.1145/1057600.1057602)
+
 ## How exact is "exact"?
 
 * **Rational values are exact.** They use [fraction.js](https://github.com/rawify/Fraction.js)
@@ -94,7 +138,7 @@ as written, so `a + b + c` means `(a + b) + c`.
 
 ## Verification
 
-`npm test` (137 tests) checks the simulator against independent implementations:
+`npm test` (143 tests, including a page smoke test in happy-dom) checks the simulator against independent implementations:
 * binary64 against native JavaScript doubles: + − × ÷, special values, decimal conversion and the
   shortest round-trip output
 * binary32 against `Math.fround`, binary16 against `Math.f16round`

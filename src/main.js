@@ -4,6 +4,7 @@ import { FORMATS, ROUNDING_MODES, makeFormat, shortestDecimal, exactShort } from
 import { compareToExact } from './engine/metrics.js';
 import { explainStep, diagnose } from './engine/explain.js';
 import { EXAMPLES, DEFAULT_EXAMPLE } from './ui/examples.js';
+import { BIB, EXAMPLE_REFS, refLink } from './ui/references.js';
 import { renderLineChart, escapeHtml } from './ui/chart.js';
 import { renderDetail, fmtErr, fmtName, causeChip, trueText } from './ui/detail.js';
 import { createSweepPanel } from './ui/sweep.js';
@@ -230,6 +231,21 @@ function markCustom() {
   state.example = '';
   $('example').value = '';
   $('example-blurb').textContent = '';
+  renderExampleRefs();
+}
+
+/** Sources of the selected example (original publication, analysis, textbook). */
+function renderExampleRefs() {
+  const host = $('example-refs');
+  const refs = EXAMPLE_REFS[state.example] || [];
+  if (!refs.length) { host.innerHTML = ''; return; }
+  const lang = getLang();
+  host.innerHTML = `<div class="refs-title">${escapeHtml(t('refs.title'))}</div><ul>${refs.map((r) => {
+    const b = BIB[r.id];
+    const link = refLink(b);
+    const note = r.note ? ` <span class="ref-note">— ${escapeHtml(r.note[lang])}</span>` : '';
+    return `<li><span class="ref-role">${escapeHtml(t('refs.' + r.role))}:</span> ${escapeHtml(b.authors)} (${b.year}). <a href="${escapeHtml(link)}" rel="noopener" target="_blank">${escapeHtml(b.title)}</a>. ${escapeHtml(b.venue)}.${note}</li>`;
+  }).join('')}</ul>`;
 }
 
 /** Texts that are not tied to the current result. */
@@ -249,6 +265,7 @@ function syncInputs() {
   $('example').value = state.example || '';
   const ex = EXAMPLES.find((e) => e.id === state.example);
   $('example-blurb').textContent = ex ? ex.blurb[getLang()] : '';
+  renderExampleRefs();
   $('program').value = state.program;
   $('mode').value = state.mode;
   $('show-const').checked = state.showConst;
