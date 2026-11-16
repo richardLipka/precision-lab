@@ -134,6 +134,11 @@ code, .mono { font-family: var(--mono); font-size: 0.95em; }
   padding: 16px 20px;
   align-items: start;
 }
+/* The step detail belongs to the format comparison; the other views get its column. */
+@media (min-width: 1280px) {
+  .layout.no-detail { grid-template-columns: 330px minmax(0, 1fr); }
+}
+.detail[hidden] { display: none; }
 @media (max-width: 1279px) {
   .layout { grid-template-columns: 320px minmax(0, 1fr); }
   .detail { grid-column: 1 / -1; }
@@ -203,8 +208,42 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; flex: none; }
 
-/* Summary cards */
+/* Results: one row per assigned variable (and the final expression), one column per format */
 .summary-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.summary-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.sumtab { border-collapse: collapse; width: 100%; font-size: 13px; }
+.sumtab th, .sumtab td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.sumtab thead th { background: var(--surface-2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.sumtab tbody th { font-weight: 500; min-width: 80px; }
+.sumtab tbody tr:last-child > * { border-bottom: none; }
+.sumtab .final-row > * { box-shadow: inset 0 -2px 0 var(--accent); }
+.sumtab .inter-row th .mono { color: var(--text-2); }
+.sum-cell {
+  font: inherit; color: inherit; text-align: left; cursor: pointer; width: 100%; display: block;
+  background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 5px;
+}
+.sum-cell:hover { border-color: var(--accent); background: var(--accent-soft); }
+.sum-cell.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.sum-cell .v { overflow-wrap: anywhere; font-weight: 600; }
+.row-tag { font-size: 10.5px; font-weight: 600; padding: 0 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.row-tag.muted { background: var(--surface-2); color: var(--muted); }
+.summary-note { margin: 6px 0 0; }
+
+/* Introduction, tab subtitles, stale results, legends */
+.intro-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.view-tab { display: inline-flex; flex-direction: column; align-items: flex-start; text-align: left; }
+.view-sub { font-size: 11.5px; font-weight: 400; color: var(--muted); }
+.notice.stale-banner { margin-top: 0; }
+.view.stale > :not(.stale-banner), .detail.stale #detail { opacity: 0.45; filter: grayscale(0.6); }
+.legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; color: var(--text-2); margin: 0 0 8px; line-height: 1.7; }
+.legend .legend-sep { color: var(--muted); }
+.legend .flag-mini { margin-left: 0; }
+.steps-hint { margin: -4px 0 4px; }
+.diag-group { margin: 4px 0 8px; }
+.diag-group > summary { cursor: pointer; font-size: 13px; margin-bottom: 4px; }
+.diag-next { margin: 10px 0 0; }
+.cause-tip { font-weight: 400; }
+.fmt-note { margin: 10px 0 0; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
 .card {
   text-align: left; font: inherit; color: inherit; cursor: pointer;
@@ -232,19 +271,28 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
   position: sticky; top: 0; z-index: 1; background: var(--surface-2); text-align: left; font-weight: 600;
   font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-.steps td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+/*
+ * Width budget (G13): at a 1440 px window the results column is
+ * 1440 − 2·20 (layout padding) − 2·16 (gaps) − 330 (setup) − 440 (detail) = 598 px,
+ * 570 px inside the panel. With three formats the table needs
+ * # (≈ 40) + step (100) + true value (96) + 3 × 96 = 524 px, so it fits; long values
+ * wrap, and the badge and chips sit below the value and may wrap too.
+ */
+.steps td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .steps td.num { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
-.steps .steptext { min-width: 150px; max-width: 280px; }
+.steps .steptext { min-width: 100px; max-width: 220px; overflow-wrap: anywhere; }
 .steps .kind { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .steps .assign, .steps .iter { display: inline-block; margin-left: 6px; font-size: 11px; color: var(--text-2); }
 .steps .iter { color: var(--muted); }
 .conv-row td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .result-row td { box-shadow: inset 0 -2px 0 var(--accent); }
-.vcell { cursor: pointer; min-width: 150px; }
+.vcell { cursor: pointer; min-width: 96px; }
 .vcell:hover { background: var(--accent-soft); }
 .vcell.active { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
-.vcell .v { overflow-wrap: anywhere; }
-.vcell .b { margin-top: 2px; }
+.vcell .v { overflow-wrap: normal; } /* numbers wrap only at the <wbr> before their exponent */
+.vcell .b { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+.vcell .b .cause { white-space: normal; margin-left: 0; }
+.vcell .b .flag-mini { margin-left: 0; }
 .exact-col { background: color-mix(in srgb, var(--exact-bg) 55%, transparent); }
 .dir { color: var(--muted); margin-left: 4px; font-family: var(--sans); }
 .pager { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 10px; }
@@ -257,6 +305,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-svg .grid { stroke: var(--border); stroke-width: 1; opacity: 0.7; }
 .chart-svg .baseline { stroke: var(--muted); stroke-width: 1; }
+.chart-svg .band-line { stroke: var(--good); stroke-width: 1; stroke-dasharray: 5 4; opacity: 0.8; }
+.chart-svg .axis-label.band-label { fill: var(--good); }
 .chart-svg .axis-label { fill: var(--muted); font-size: 11px; font-family: var(--sans); }
 .chart-svg .direct-label { fill: var(--text-2); font-size: 11px; font-family: var(--sans); }
 .chart-svg .series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
@@ -309,6 +359,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 .nl-text { fill: var(--text-2); font-size: 11px; font-family: var(--sans); }
 .nl-text.mono-fill { font-family: var(--mono); fill: var(--text); }
 .nl-text.muted-fill { fill: var(--muted); }
+.nl-ulp { stroke: var(--muted); stroke-width: 1; }
 
 /* ---- Sequential ramp for precisions (light: light→dark, dark: dark→light) ---- */
 :root {
@@ -360,6 +411,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 /* Diagnosis */
 .diag { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .diag li { overflow-wrap: anywhere; }
+.diag-helper { margin: 4px 0 6px; }
+.diag-digits { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 .diag .step-link { font-family: var(--sans); }
 
 /* Sweep */
@@ -444,6 +497,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 .footer-logo:hover { color: var(--accent); }
 .fav-mark { width: 64px; height: auto; display: block; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Description of the selected example: what happens, the lesson, where to look */
+#example-blurb .ex-blurb, #example-blurb .ex-lesson, #example-blurb .ex-look { display: block; }
+#example-blurb .ex-lesson, #example-blurb .ex-look { margin-top: 4px; }
+#example-blurb b { color: var(--text-2); font-weight: 600; }
 
 /* Sources of the selected example */
 .example-refs:empty { display: none; }

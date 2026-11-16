@@ -8,23 +8,23 @@
 // rounded result, otherwise retry with more digits.
 
 import { Fraction, exact, pow10, ZERO, dyadic, bitLength } from './rational.js';
-import { fp, roundFraction, fpToFraction, fpEquals, fpNeg } from './ieee.js';
-import { decCtx, decFn, decToFraction, fracToDec, exactRoot } from './real.js';
+import { fp, roundFraction, fpToFraction, fpEquals, fpNeg, flagsFrom, special } from './ieee.js';
+import { decCtx, decFn, decToFraction, fracToDec, exactRoot, decBeyond, MAX_DEC_EXP } from './real.js';
 import { EngineError } from './messages.js';
+import { fullDigits } from './metrics.js';
 
-const flagsOf = (round, extra = {}) => ({
-  inexact: !!round?.inexact,
-  overflow: !!round?.overflow,
-  underflow: !!round?.underflow,
-  divByZero: !!extra.divByZero,
-  invalid: !!extra.invalid,
-});
-
-const special = (value, exactOp, extra = {}) => ({ value, exactOp, round: null, flags: flagsOf(null, extra) });
+/**
+ * Ziv's strategy starts with the format's decimal digits plus this many guard
+ * digits: a result closer than 10^−12 relative to a rounding boundary is rare,
+ * so the first attempt almost always decides.
+ */
+const ZIV_GUARD_DIGITS = 12;
+/** Each retry doubles the digits; after 7 tries (the last one at 64× the starting digits) the result is marked uncertain. */
+const ZIV_MAX_ITER = 7;
 
 function exactResult(r, fmt, mode, zeroSign = 0) {
   const round = roundFraction(r, fmt, mode, zeroSign);
-  return { value: round.value, exactOp: exact.finite(r), round, flags: flagsOf(round) };
+  return { value: round.value, exactOp: exact.finite(r), round, flags: flagsFrom(round) };
 }
 
 /**
@@ -32,9 +32,9 @@ function exactResult(r, fmt, mode, zeroSign = 0) {
  * @param {(C:Function)=>any} compute decimal.js computation in constructor C
  */
 export function zivRound(compute, fmt, mode) {
-  let P = Math.ceil(fmt.p * Math.log10(2)) + 12;
+  let P = Math.ceil(fullDigits(fmt)) + ZIV_GUARD_DIGITS;
   let last = null;
-  for (let iter = 0; iter < 7; iter++) {
+  for (let iter = 0; iter < ZIV_MAX_ITER; iter++) {
     let y;
     try {
       y = compute(decCtx(P));
@@ -45,8 +45,10 @@ export function zivRound(compute, fmt, mode) {
       }
       throw e;
     }
+    if (decBeyond(y)) return beyondRange(y, fmt, mode, P);
     const A = decToFraction(y);
     if (A.n === 0n) return { A, round: roundFraction(A, fmt, mode), P };
+    // error bound of the P-digit evaluation: one unit in its P-th significant digit, |A|·10^(1−P)
     const eps = A.abs().div(new Fraction(pow10(P - 1), 1n));
     const lo = roundFraction(A.sub(eps), fmt, mode);
     const hi = roundFraction(A.add(eps), fmt, mode);
@@ -60,10 +62,36 @@ export function zivRound(compute, fmt, mode) {
   return last;
 }
 
+/**
+ * A function value beyond ±10^MAX_DEC_EXP (exp(10⁶), pow(1.0078125, 10⁸)) is far
+ * outside every bounded format, so its rounding is decided by the range alone:
+ * a value above 2^(emax+1) rounds like any other overflow (±∞ or the largest
+ * finite number, by mode), one below 2^(emin−p−1) like any other underflow
+ * past half the smallest subnormal. Such a stand-in value is rounded instead of
+ * the true one, which never has to become a (gigantic) fraction. Unbounded
+ * formats have no such limit, so there the range error remains.
+ */
+function beyondRange(y, fmt, mode, P) {
+  if (!fmt.bounded || y.isNaN()) throw new EngineError('real.range', { max: MAX_DEC_EXP });
+  const sign = y.isNeg() ? 1 : 0;
+  const huge = !y.isFinite() || y.e > 0;
+  const stand = dyadic(1n, huge ? fmt.emax + 2 : fmt.emin - fmt.p - 2, sign);
+  const round = roundFraction(stand, fmt, mode);
+  round.inexact = true;
+  return { A: stand, y, round, P, beyond: huge ? 'huge' : 'tiny', sign };
+}
+
 function irrational(compute, fmt, mode) {
   const z = zivRound(compute, fmt, mode);
+  if (z.beyond) {
+    // The exact result on the stored operands cannot be a fraction either.
+    const exactOp = z.beyond === 'huge'
+      ? { ...exact.inf(z.sign), beyond: true }
+      : { kind: 'finite', r: ZERO, approx: true, ziv: true, a: z.y, b: z.y, reliable: 0, beyond: true };
+    return { value: z.round.value, exactOp, round: z.round, flags: flagsFrom(z.round), uncertain: false };
+  }
   const exactOp = { kind: 'finite', r: z.A, approx: true, ziv: true, a: z.y, b: z.y, reliable: z.P - 1 };
-  return { value: z.round.value, exactOp, round: z.round, flags: flagsOf(z.round), uncertain: !!z.uncertain };
+  return { value: z.round.value, exactOp, round: z.round, flags: flagsFrom(z.round), uncertain: !!z.uncertain };
 }
 
 const decOf = (v) => (C) => fracToDec(fpToFraction(v), C);

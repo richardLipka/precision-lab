@@ -4,7 +4,8 @@
 //   statement := 'repeat' INT '{' program '}'
 //              | NAME '=' expr
 //              | expr
-//   expr      := term (('+' | '-') term)*
+//   expr      := sum (CMP sum)?                 (CMP: == != < <= > >=, not chainable)
+//   sum       := term (('+' | '-') term)*
 //   term      := unary (('*' | '/') unary)*
 //   unary     := ('-' | '+') unary | power
 //   power     := primary ('^' unary)?          (integer exponent, right associative)
@@ -12,9 +13,14 @@
 //
 // Evaluation order is exactly as written: a + b + c means (a + b) + c, so
 // re-associating changes the rounded result just as it does in real code.
+//
+// A comparison evaluates to exactly 1 (true) or 0 (false). It binds more
+// loosely than + and −, so a + b == c means (a + b) == c, and it cannot be
+// chained: a < b < c is an error instead of C's silent (a < b) < c.
 
 import { parseLiteral } from './rational.js';
 import { EngineError } from './messages.js';
+import { CASTS } from './ieee.js';
 
 export { EngineError as ParseError };
 
@@ -39,7 +45,12 @@ export const FUNCTIONS = {
   tan: { arity: 1 },
   atan: { arity: 1 },
   pow: { arity: 2 },
+  // Format casts: store the value into that format (see CASTS in ieee.js).
+  ...Object.fromEntries(Object.keys(CASTS).map((name) => [name, { arity: 1 }])),
 };
+
+/** Comparison operators; they evaluate to exactly 1 or 0. */
+export const COMPARISONS = ['==', '!=', '<', '<=', '>', '>='];
 
 const NUM_RE = /^(?:0[xX][0-9a-fA-F]*(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?|(?:\d[\d_]*)?(?:\.\d*)?(?:[eE][+-]?\d+)?)/;
 
@@ -80,9 +91,13 @@ export function tokenize(src) {
     }
     if (c === 'π') { toks.push({ t: 'name', v: 'pi', pos: i, end: i + 1 }); i++; continue; }
     if (c === '√') { toks.push({ t: 'name', v: 'sqrt', pos: i, end: i + 1 }); i++; continue; }
-    const map = { '−': '-', '×': '*', '·': '*', '÷': '/', '∞': 'inf' };
+    const map = { '−': '-', '×': '*', '·': '*', '÷': '/', '∞': 'inf', '≠': '!=', '≤': '<=', '≥': '>=' };
     const ch = map[c] || c;
     if (ch === 'inf') { toks.push({ t: 'num', v: '∞', value: parseLiteral('inf'), pos: i, end: i + 1 }); i++; continue; }
+    // Two-character comparisons first, so that '==' is not read as two assignments.
+    const two = src.slice(i, i + 2);
+    if (two === '==' || two === '!=' || two === '<=' || two === '>=') { toks.push({ t: 'op', v: two, pos: i, end: i + 2 }); i += 2; continue; }
+    if (COMPARISONS.includes(ch)) { toks.push({ t: 'op', v: ch, pos: i, end: i + 1 }); i++; continue; }
     if ('+-*/^(),={}'.includes(ch)) { toks.push({ t: 'op', v: ch, pos: i, end: i + 1 }); i++; continue; }
     throw new EngineError('parse.unexpectedChar', { ch: c }, i, src);
   }
@@ -144,7 +159,18 @@ export function parseProgram(src) {
     return node('expr', e.start, e.end, { expr: e });
   }
 
+  const isCmp = () => peek().t === 'op' && COMPARISONS.includes(peek().v);
+
   function expr() {
+    const left = sum();
+    if (!isCmp()) return left;
+    const op = next().v;
+    const right = sum();
+    if (isCmp()) throw new EngineError('parse.chainedCmp', { op: peek().v }, peek().pos, src);
+    return node('bin', left.start, right.end, { op, left, right });
+  }
+
+  function sum() {
     let left = term();
     while (isOp('+') || isOp('-')) {
       const op = next().v;

@@ -2,13 +2,19 @@
 // once exactly (rational arithmetic on the exact inputs = the true value) and
 // once in each selected IEEE format (correctly rounded on that format's own
 // operands, so errors propagate exactly as on real hardware).
+//
+// Comparisons give exactly 1 or 0 everywhere (the exact column compares the
+// true values). A cast such as double(x) rounds the stored value into the named
+// format and back into each column's format; in the exact column it is the
+// identity, because storing a value changes only its rounded copy, never the
+// true value — so the cast's error shows up as a difference from the truth.
 
-import { parseProgram } from './parser.js';
+import { parseProgram, COMPARISONS } from './parser.js';
 import { EngineError } from './messages.js';
 import {
-  parseLiteral, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactAbs, exactFma, exact, ONE,
+  parseLiteral, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactAbs, exactFma, exact, ONE, Fraction, log10Abs,
 } from './rational.js';
-import { fromExact, fpOp } from './ieee.js';
+import { fromExact, fpOp, CASTS, orderSatisfies } from './ieee.js';
 import { setRealDigits, realDigits, realOp, realNeg, realAbs, exactFunction, exactPi, FUNCTION_NAMES, limitSize } from './real.js';
 import { fpFunction, fpPi } from './fpfunc.js';
 
@@ -28,9 +34,53 @@ const EXACT_OPS = {
   abs: (a) => (a[0].approx ? realAbs(a[0]) : exactAbs(a[0])),
 };
 for (const name of FUNCTION_NAMES) EXACT_OPS[name] = (a) => exactFunction(name, a);
+// A cast changes only the stored value: the true value of double(x) is the true value of x.
+for (const name of Object.keys(CASTS)) EXACT_OPS[name] = (a) => ({ ...a[0] });
+for (const op of COMPARISONS) EXACT_OPS[op] = (a) => exactCompare(op, a[0], a[1]);
 const FN = new Set(FUNCTION_NAMES);
 
-export const OP_SYMBOL = { '+': '+', '-': '−', '*': '×', '/': '÷' };
+export const OP_SYMBOL = { '+': '+', '-': '−', '*': '×', '/': '÷', '==': '=', '!=': '≠', '<': '<', '<=': '≤', '>': '>', '>=': '≥' };
+
+/**
+ * An irrational reference is trusted to all but this many of its verified
+ * digits when two true values are compared (the same slack as ast.js uses).
+ */
+const COMPARE_SLACK_DIGITS = 3;
+
+/**
+ * The true answer of a comparison: exactly 1 or 0. Rationals compare exactly.
+ * An irrational reference is known only to its verified digits, so two values
+ * that agree on all of them cannot be ordered: they count as equal and the
+ * answer is marked `undecided` (sqrt(2)·sqrt(2) == 2 is true, but the
+ * reference cannot prove it). A comparison with an undefined true value (0/0)
+ * is undefined as well.
+ */
+export function exactCompare(op, a, b) {
+  const { order, undecided } = exactOrder(a, b);
+  if (order == null) return exact.nan('comparison with an undefined value');
+  const out = exact.finite(orderSatisfies(op, order) ? ONE : new Fraction(0));
+  if (undecided) out.undecided = true;
+  return out;
+}
+
+/**
+ * Order of two true values: {order: −1 | 0 | 1 | null (undefined), undecided}
+ * (see exactCompare for `undecided`).
+ */
+export function exactOrder(a, b) {
+  if (a.kind === 'nan' || b.kind === 'nan') return { order: null, undecided: false };
+  if (a.kind === 'inf' || b.kind === 'inf') {
+    const rank = (x) => (x.kind === 'inf' ? (x.sign ? -1 : 1) : 0);
+    return { order: Math.sign(rank(a) - rank(b)), undecided: false };
+  }
+  const order = a.r.compare(b.r);
+  if (order !== 0 && (a.approx || b.approx)) {
+    // log10 of the uncertainty of each reference (−∞ for an exact one)
+    const unc = (x) => (!x.approx ? -Infinity : x.r.n === 0n ? (x.reliable > 0 ? -Infinity : Infinity) : log10Abs(x.r) - (x.reliable - COMPARE_SLACK_DIGITS));
+    if (log10Abs(a.r.sub(b.r)) <= Math.max(unc(a), unc(b))) return { order: 0, undecided: true };
+  }
+  return { order, undecided: false };
+}
 
 /**
  * @param {object} cfg
@@ -99,7 +149,11 @@ export function evaluate({ variables = [], program = '', formats, mode = 'RNE', 
   function opStep(op, operandIds, text, extra = {}) {
     const ops = operandIds.map((id) => steps[id]);
     // The exact chain does not depend on the formats: a sweep reuses it between chunks.
-    const ex = exactCache?.[steps.length] ?? limitSize(EXACT_OPS[op](ops.map((s) => s.exact)));
+    let ex = exactCache?.[steps.length] ?? limitSize(EXACT_OPS[op](ops.map((s) => s.exact)));
+    // An operand beyond the reference's range is only a stand-in (∞ or 0): an ∞ or NaN
+    // computed from it stands in for an unknown finite value too (tiny stand-ins keep
+    // their mark through the decimal reference, see approxValue).
+    if (!ex.beyond && (ex.kind === 'inf' || ex.kind === 'nan') && ops.some((s) => s.exact.beyond)) ex = { ...ex, beyond: true };
     if (exactCache) exactCache[steps.length] = ex;
     const fmt = {};
     for (const f of formats) {

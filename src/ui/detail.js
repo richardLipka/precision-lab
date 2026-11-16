@@ -3,13 +3,14 @@
 // representable numbers, the bit pattern and the error.
 
 import {
-  shortestDecimal, encode, binarySci, fpToFraction, fpEquals, exactShort, ulpOf, formatFacts,
+  shortestDecimal, encode, binarySci, fpToFraction, fpEquals, exactShort, ulpOf, formatFacts, CASTS, FORMATS,
 } from '../engine/ieee.js';
 import { exactDecimal, fmtFrac } from '../engine/rational.js';
-import { compareToExact, localError } from '../engine/metrics.js';
+import { compareToExact, localError, correctDigits, QUALITY_GOOD, QUALITY_MID } from '../engine/metrics.js';
 import { explainStep } from '../engine/explain.js';
-import { approxText } from '../engine/real.js';
+import { approxText, MAX_DEC_EXP } from '../engine/real.js';
 import { OP_SYMBOL } from '../engine/evaluator.js';
+import { COMPARISONS } from '../engine/parser.js';
 import { escapeHtml } from './chart.js';
 import { t } from '../i18n.js';
 import { binaryOperationHtml } from './binaryView.js';
@@ -18,6 +19,16 @@ export function fmtErr(r, digits = 4) {
   if (!r) return '—';
   if (r.n === 0n) return '0';
   return fmtFrac(r, digits, { plainMin: -3, plainMax: 5 });
+}
+
+/**
+ * Displayed correct digits (see correctDigits in metrics.js): the capped figure,
+ * followed by the measured −log10(relative error) when that was higher.
+ */
+export function digitsText(info, decimals = 1) {
+  if (info.shown == null) return '—';
+  if (info.shown === Infinity) return '∞';
+  return info.shown.toFixed(decimals) + (info.capped ? ' ' + t('digits.measured', { raw: info.raw.toFixed(decimals) }) : '');
 }
 
 /** Translated format name. */
@@ -34,7 +45,47 @@ export function causeChip(cause) {
   return `<span class="cause cause-${cause.tone}" title="${escapeHtml(t('cause.' + cause.code + '.tip'))}">${escapeHtml(t('cause.' + cause.code, cause.params))}</span>`;
 }
 
-const TONE_ICON = { good: '✓', info: 'ℹ', warn: '!', bad: '▲' };
+/**
+ * Icons that carry the quality of a badge without colour (the same in every
+ * view): none for good, ◐ for partly lost, ✕ for mostly lost. ▲ / ▼ are kept
+ * for "better" / "worse" in the Rearrange view, so no glyph changes meaning.
+ */
+export const QUALITY_ICON = { 'q-mid': '◐ ', 'q-bad': '✕ ' };
+
+/** IEEE exception flags as the step table abbreviates them. */
+export const FLAG_ABBR = [['overflow', 'OVF'], ['underflow', 'UNF'], ['divByZero', 'DIV0'], ['invalid', 'INV']];
+
+/** Abbreviated flags of a result, each with its meaning as a title (also listed in the legend). */
+export function flagMiniHtml(flags) {
+  return FLAG_ABBR.filter(([k]) => flags?.[k]).map(([k, a]) => `<span class="flag-mini" title="${escapeHtml(t('flag.' + k))}">${a}</span>`).join('');
+}
+
+/**
+ * Visible key to the badges (and, for the step table, to the arrows, chips and
+ * flags): what is otherwise only in hover titles must be readable on touch
+ * screens too. The thresholds come from metrics.js, as for the badges themselves.
+ */
+export function badgeLegendHtml({ table = false } = {}) {
+  const good = Math.round(QUALITY_GOOD * 100);
+  const mid = Math.round(QUALITY_MID * 100);
+  const unit = t('badge.digits', { d: '' }).trim();
+  const sample = (q, d) => `<span class="badge ${q}">${QUALITY_ICON[q] || ''}${escapeHtml(t('badge.digits', { d }))}</span>`;
+  const items = [
+    `<span><span class="badge q-exact">${escapeHtml(t('badge.exact'))}</span> ${escapeHtml(t('legend.exact'))}</span>`,
+    `<span>${escapeHtml(t('legend.unit', { unit }))} ${sample('q-good', '7.0')} ${escapeHtml(t('legend.good', { pct: good }))}, ${sample('q-mid', '4.0')} ${escapeHtml(t('legend.mid', { lo: mid, hi: good }))}, ${sample('q-bad', '1.0')} ${escapeHtml(t('legend.bad', { pct: mid }))}</span>`,
+  ];
+  if (table) {
+    items.push(
+      `<span>${escapeHtml(t('legend.zero'))}</span>`,
+      `<span><span class="dir">↑</span> / <span class="dir">↓</span> ${escapeHtml(t('legend.dir'))}</span>`,
+      `<span><span class="cause">${escapeHtml(t('cause.round'))}</span> ${escapeHtml(t('legend.chip'))}</span>`,
+      `<span>${FLAG_ABBR.map(([k, a]) => `<span class="flag-mini">${a}</span> ${escapeHtml(t('flag.' + k))}`).join(', ')}</span>`,
+    );
+  }
+  return `<div class="legend small"><b>${escapeHtml(t('legend.title'))}</b> ${items.join('<span class="legend-sep" aria-hidden="true"> · </span>')}</div>`;
+}
+
+const TONE_ICON = { good: '✓', info: 'ℹ', warn: '!', bad: '✕' };
 
 export function explanationHtml(items) {
   return `<ul class="explain">${items.map((it) => `<li class="ex-${it.tone}"><span class="ex-icon" aria-hidden="true">${TONE_ICON[it.tone] || 'ℹ'}</span><span>${escapeHtml(t(it.code, it.params))}</span></li>`).join('')}</ul>`;
@@ -49,13 +100,25 @@ function decimalBlock(r, max = 1200) {
   return `<div class="mono long">${escapeHtml(d.text)}</div><span class="muted small">${escapeHtml(note)}</span>`;
 }
 
+/**
+ * A true value beyond ±10^±MAX_DEC_EXP (exp(±10⁶)): the reference holds only a
+ * stand-in (∞ or 0), so only its range is written: "> 10^100000", "0 < |x| < 10^−100000".
+ */
+function beyondText(x) {
+  if (x.kind === 'inf') return `${x.sign ? '< −' : '> '}10^${MAX_DEC_EXP}`;
+  if (x.kind === 'nan') return '?';
+  return `0 < |x| < 10^−${MAX_DEC_EXP}`;
+}
+
 /** Short text of a true value; irrational values get ≈ and only verified digits. */
 export function trueText(x, digits = 20) {
+  if (x.beyond) return beyondText(x);
   if (x.kind === 'finite' && x.approx) return '≈ ' + approxText(x, digits);
   return exactShort(x, digits);
 }
 
 function exactValText(x) {
+  if (x.beyond) return `<div class="mono">${escapeHtml(beyondText(x))}</div>`;
   if (x.kind === 'finite' && x.approx) {
     return `<div class="mono long">≈ ${escapeHtml(approxText(x, 400))}…</div><span class="muted small">${escapeHtml(t(x.ziv ? 'det.ziv' : x.big ? 'det.big' : 'det.irrational', { v: Math.floor(x.reliable) }))}</span>`;
   }
@@ -97,7 +160,7 @@ function numberLine(res, fmt) {
     return `<p class="bad">${escapeHtml(t('nl.overflow', { fmt: fmtName(fmt), v: shortestDecimal(res.value, fmt) }))}</p>`;
   }
   const W = 420;
-  const H = 92;
+  const H = 116;
   const x0 = 40;
   const x1 = W - 40;
   const y = 44;
@@ -110,13 +173,19 @@ function numberLine(res, fmt) {
   const lo = R.below;
   const hi = R.above;
   let tt = 0.5;
+  let gap = null; // the distance between the two neighbours = 1 ulp of this step
   const finite = (v) => v.kind === 'finite' || v.kind === 'zero';
   if (finite(lo) && finite(hi) && res.exactOp.kind === 'finite') {
     const a = fpToFraction(lo);
     const b = fpToFraction(hi);
-    const f = res.exactOp.r.sub(a).div(b.sub(a));
+    gap = b.sub(a);
+    const f = res.exactOp.r.sub(a).div(gap);
     tt = Number((f.n * 1000000n) / f.d) / 1000000;
   }
+  const yu = y + 54;
+  const ulpMark = gap ? `<line x1="${x0}" x2="${x1}" y1="${yu}" y2="${yu}" class="nl-ulp"/>
+    <line x1="${x0}" x2="${x0}" y1="${yu - 4}" y2="${yu + 4}" class="nl-ulp"/><line x1="${x1}" x2="${x1}" y1="${yu - 4}" y2="${yu + 4}" class="nl-ulp"/>
+    <text x="${(x0 + x1) / 2}" y="${yu + 14}" text-anchor="middle" class="nl-text nl-ulp-text">${escapeHtml(t('nl.ulp', { ulp: fmtErr(gap, 4) }))}</text>` : '';
   const px = x0 + tt * (x1 - x0);
   const chosenX = fpEquals(res.value, hi) ? x1 : fpEquals(res.value, lo) ? x0 : null;
   const lab = (v) => (v.kind === 'inf' ? (v.sign ? '−∞' : '+∞') : shortestDecimal(v, fmt));
@@ -131,6 +200,7 @@ function numberLine(res, fmt) {
     <text x="${Math.min(Math.max(px, 90), W - 90)}" y="${y - 22}" text-anchor="middle" class="nl-text">${escapeHtml(t('nl.exact', { pct: (tt * 100).toFixed(1) }))}</text>
     <text x="4" y="${y + 40}" text-anchor="start" class="nl-text mono-fill">${escapeHtml(short(lab(lo)))}</text>
     <text x="${W - 4}" y="${y + 40}" text-anchor="end" class="nl-text mono-fill">${escapeHtml(short(lab(hi)))}</text>
+    ${ulpMark}
   </svg>`;
 }
 
@@ -154,6 +224,10 @@ function opDescription(step, steps, fmtId, fmt) {
     return `<a href="#" class="step-link" data-step="${id}">#${id}</a> <span class="muted">${escapeHtml(name)}</span> = <span class="mono">${escapeHtml(v.length > 60 ? v.slice(0, 58) + '…' : v)}</span>`;
   });
   if (step.op === 'fma') return t('det.fma', { a: opnd[0], b: opnd[1], c: opnd[2] });
+  if (CASTS[step.op]) {
+    const target = escapeHtml(fmtName(FORMATS.find((f) => f.id === CASTS[step.op])));
+    return t(fmtId === 'exact' ? 'det.castExact' : 'det.cast', { a: opnd[0], target });
+  }
   if (!OP_SYMBOL[step.op] && step.op !== 'neg' && step.op !== 'abs') return `${escapeHtml(step.op)}(${opnd.join(', ')})`;
   if (step.op === 'neg') return t('det.neg', { a: opnd[0] });
   if (step.op === 'abs') return t('det.abs', { a: opnd[0] });
@@ -186,38 +260,46 @@ export function renderDetail(host, ctx) {
   const res = step.fmt[fmt.id];
   const v = res.value;
   const cmp = compareToExact(v, step.exact, fmt);
+  const dg = correctDigits(cmp, fmt);
   const loc = localError(res, fmt);
   const R = res.round;
   const ex = explainStep(step, steps, fmt, result.mode);
 
+  // The exact result of the operation on the STORED operands is not the true value:
+  // say so, and relate the two to the error budget (new vs inherited error).
+  const exactOpNote = step.kind === 'op' && !res.cast
+    ? `<p class="muted small">${escapeHtml(t('det.exactBeforeNote', { fmt: fmtName(fmt), true: trueText(step.exact, 20) }))}</p>` : '';
   const roundingSection = R ? `
-    <section><h3>${t('det.exactBefore')}</h3>${exactValText(res.exactOp)}</section>
-    <section><h3>${escapeHtml(t('det.rounding', { fmt: fmtName(fmt) }))} <span class="muted small">(${escapeHtml(t('mode.' + result.mode))})</span></h3>
+    <section><h3>${t('det.exactBefore')}</h3>${exactValText(res.exactOp)}${exactOpNote}</section>
+    <section><h3>${escapeHtml(t('det.rounding', { fmt: fmtName(res.cast ? FORMATS.find((f) => f.id === res.cast.target) : fmt) }))} <span class="muted small">(${escapeHtml(t('mode.' + result.mode))})</span></h3>
       ${numberLine(res, fmt)}
       <div class="kv"><span>${t('det.direction')}</span><span>${R.direction === 'exact' ? t('det.noRounding') : R.direction === 'up' ? t('det.roundedUp') : t('det.roundedDown')}${R.inexact && !R.overflow ? ` · ${t('det.guard', { g: R.guard, s: R.sticky ? 1 : 0 })}` : ''}</span></div>
       <div class="kv"><span>${t('det.stepError')}</span><span>${loc ? `${fmtErr(loc.abs)} = ${fmtErr(loc.ulps, 3)} ulp` : '—'}</span></div>
+      ${loc && R.inexact && !R.overflow ? `<div class="kv"><span>${t('det.stepUlp')}</span><span class="mono">${fmtErr(loc.ulp, 6)}</span></div>` : ''}
       <div class="kv"><span>${t('det.flags')}</span><span>${flagList(res.flags)}</span></div>
-    </section>` : `<section><h3>${t('det.result')}</h3><p class="muted">${step.op === 'neg' || step.op === 'abs' ? t('det.signExact') : t('det.specialRule')}</p><div class="kv"><span>${t('det.flags')}</span><span>${flagList(res.flags)}</span></div></section>`;
+    </section>` : `<section><h3>${t('det.result')}</h3><p class="muted">${step.op === 'neg' || step.op === 'abs' ? t('det.signExact') : COMPARISONS.includes(step.op) ? t('det.compareExact') : t('det.specialRule')}</p><div class="kv"><span>${t('det.flags')}</span><span>${flagList(res.flags)}</span></div></section>`;
 
   const errSection = (() => {
     if (cmp.status === 'exact') return `<p class="good">${t('det.equal')}</p>`;
     if (cmp.status === 'both-nan') return `<p class="muted">${t('det.bothNan')}</p>`;
     if (cmp.status === 'both-inf') return `<p class="muted">${t('det.bothInf')}</p>`;
-    if (cmp.status === 'mismatch') return `<p class="bad">${escapeHtml(t('det.mismatch', { v: shortestDecimal(v, fmt), x: exactShort(step.exact) }))}</p>`;
+    if (cmp.status === 'mismatch') return `<p class="bad">${escapeHtml(t('det.mismatch', { v: shortestDecimal(v, fmt), x: trueText(step.exact) }))}</p>`;
     return `<div class="kv"><span>${t('det.absErr')}</span><span class="mono">${fmtErr(cmp.abs)}</span></div>
       <div class="kv"><span>${t('det.relErr')}</span><span class="mono">${cmp.rel ? fmtErr(cmp.rel) : t('det.relZero')}</span></div>
       <div class="kv"><span>${t('det.ulpErr')}</span><span class="mono">${fmtErr(cmp.ulps, 4)}</span></div>
-      <div class="kv"><span>${t('det.digits')}</span><span class="mono">${cmp.rel ? cmp.digits.toFixed(2) : '—'} <span class="muted">${t('det.of', { n: (fmt.p * Math.log10(2)).toFixed(1) })}</span></span></div>`;
+      <div class="kv"><span>${t('det.digits')}</span><span class="mono">${cmp.rel ? dg.shown.toFixed(1) : '—'} <span class="muted">${t('det.of', { n: dg.full.toFixed(1) })}</span>${cmp.rel && dg.capped ? `<br><span class="muted small">${escapeHtml(t('det.digitsRaw', { raw: dg.raw.toFixed(2) }))}</span>` : ''}</span></div>`;
   })();
 
   const facts = formatFacts(fmt);
+  // The chip's meaning is written out next to it (a title alone is unreachable on touch screens).
+  const causeTip = ex.cause ? ` <span class="muted small cause-tip">${escapeHtml(t('cause.' + ex.cause.code + '.tip'))}</span>` : '';
   host.innerHTML = `${head}${tabs}
-    <section class="what"><h3>${t('det.what')} ${causeChip(ex.cause)}</h3>${explanationHtml(ex.items)}</section>
+    <section class="what"><h3>${t('det.what')} ${causeChip(ex.cause)}${causeTip}</h3>${explanationHtml(ex.items)}</section>
     <section><h3>${escapeHtml(t('det.opIn', { fmt: fmtName(fmt) }))}</h3><p>${opDescription(step, steps, fmt.id, fmt)}</p></section>
     <section class="binary"><h3>${escapeHtml(t('bin.title'))}</h3>${binaryOperationHtml(step, steps, fmt, res, result.mode)}</section>
     ${roundingSection}
     <section><h3>${t('det.stored')}</h3>
-      <div class="kv"><span>${t('det.shortest')}</span><span class="mono strong long">${escapeHtml(shortestDecimal(v, fmt))}</span></div>
+      <div class="kv"><span>${t('det.shortest')}</span><div><span class="mono strong long">${escapeHtml(shortestDecimal(v, fmt))}</span><span class="muted small">${escapeHtml(t('det.shortestNote'))}</span></div></div>
       ${v.kind === 'finite' ? `<div class="kv"><span>${t('det.binary')}</span><span class="mono long">${escapeHtml(binarySci(v, fmt))}</span></div>` : ''}
       ${v.kind === 'finite' || v.kind === 'zero' ? `<div class="kv"><span>${t('det.storedExact')}</span><div>${decimalBlock(fpToFraction(v), 20000)}</div></div>` : ''}
       ${v.kind === 'finite' ? `<div class="kv"><span>${t('det.ulpHere')}</span><span class="mono">${fmtErr(ulpOf(v, fmt), 6)}</span></div>` : ''}
@@ -227,8 +309,10 @@ export function renderDetail(host, ctx) {
       <div class="kv"><span>${t('det.trueValue')}</span><span class="mono long">${escapeHtml(trueText(step.exact, 25))}</span></div>
       ${errSection}
     </section>
+    ${fmt.id === 'x87' ? `<p class="muted small fmt-note">${escapeHtml(t('fmt.note.x87'))}</p>` : ''}
     <details><summary>${escapeHtml(t('det.about', { fmt: fmtName(fmt) }))}</summary>
-      <div class="kv"><span>${t('det.precision')}</span><span>${t('det.precisionVal', { p: fmt.p, d: (fmt.p * Math.log10(2)).toFixed(2) })}</span></div>
+      ${fmt.bounded ? `<p class="small">${escapeHtml(t('det.rangeVsPrecision', { p: fmt.p, d: dg.full.toFixed(1), e: fmt.expBits, min: fmtFrac(facts.minSubnormal, 3), max: fmtFrac(facts.max, 3) }))}</p>` : ''}
+      <div class="kv"><span>${t('det.precision')}</span><span>${t('det.precisionVal', { p: fmt.p, d: dg.full.toFixed(2) })}</span></div>
       <div class="kv"><span>${t('det.eps')}</span><span class="mono">${fmtFrac(facts.epsilon, 6)}</span></div>
       <div class="kv"><span>${t('det.u')}</span><span class="mono">${fmtFrac(facts.unitRoundoff, 6)}</span></div>
       ${fmt.bounded ? `<div class="kv"><span>${t('det.expRange')}</span><span>${fmt.emin} … ${fmt.emax}</span></div>
@@ -236,7 +320,6 @@ export function renderDetail(host, ctx) {
       <div class="kv"><span>${t('det.minNormal')}</span><span class="mono">${fmtFrac(facts.minNormal, 8)}</span></div>
       <div class="kv"><span>${t('det.minSub')}</span><span class="mono">${fmtFrac(facts.minSubnormal, 8)}</span></div>
       <div class="kv"><span>${t('det.storage')}</span><span>${t('det.storageVal', { n: fmt.totalBits })}</span></div>` : `<p class="muted">${t('det.unboundedFmt')}</p>`}
-      ${fmt.id === 'x87' ? `<p class="muted small">${t('fmt.note.x87')}</p>` : ''}
     </details>`;
   bindLinks(host, ctx);
 }

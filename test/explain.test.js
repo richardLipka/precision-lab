@@ -29,7 +29,12 @@ describe('explanations', () => {
     const ex = explainStep(r.steps[0], r.steps, F.binary64, 'RNE');
     expect(ex.cause.code).toBe('repr');
     expect(codes(ex)).toContain('conv.periodic');
-    expect(ex.items.find((i) => i.code === 'conv.periodic').params.factors).toBe('5');
+    const p = ex.items.find((i) => i.code === 'conv.periodic').params;
+    expect(p.factors).toEqual({ key: 'factor.one', params: { list: '5' } });
+    // the step 0.1 = 1/10 is shown, and the notation is explained
+    expect(p.value).toBe('0.1 = 1/10');
+    expect(p.bin).toBe('0.0(0011)₂');
+    expect(p.note.key).toBe('expansion.period');
   });
 
   it('16777217 needs 25 bits in float', () => {
@@ -63,7 +68,11 @@ describe('explanations', () => {
   it('overflow and inherited infinity', () => {
     const r = run('y = x*x*x\ny / x', [{ name: 'x', value: '1e20' }], [F.binary32]);
     const st = r.steps.find((s) => s.fmt.binary32.flags.overflow);
-    expect(explainStep(st, r.steps, F.binary32, 'RNE').cause.code).toBe('overflow');
+    const ex = explainStep(st, r.steps, F.binary32, 'RNE');
+    expect(ex.cause.code).toBe('overflow');
+    // The message names the largest finite float, (2 − 2⁻²³)·2¹²⁷ ≈ 3.4028e38.
+    const ov = ex.items.find((i) => i.code === 'sp.overflow');
+    expect(ov.params.max).toMatch(/^3\.4028\d*e\+?38$/);
     const dg = diagnose(r, F.binary32);
     expect(dg.final.status).toBe('mismatch');
     expect(dg.origin.id).toBe(st.id);
@@ -80,6 +89,24 @@ describe('explanations', () => {
       [{ name: 'x1', value: '100000001' }, { name: 'x2', value: '100000002' }, { name: 'x3', value: '100000003' }], [F.binary32]);
     const dg = diagnose(r, F.binary32);
     expect(dg.losses[0].step.id).toBe(r.result);
+  });
+
+  it('diagnoses any variable, and lists the rounded values an exact result was built on', () => {
+    const r = run('left = (a + b) + c\nright = a + (b + c)',
+      [{ name: 'a', value: '1e16' }, { name: 'b', value: '-1e16' }, { name: 'c', value: '1' }], [F.binary64]);
+    const left = diagnose(r, F.binary64, { root: r.env.left });
+    const right = diagnose(r, F.binary64);
+    expect(left.final.status).toBe('exact');
+    expect(left.carried).toEqual([]);
+    expect(right.final.status).toBe('approx');
+    // 0.1 + 0.2 − 0.3 in float: exact only because 0.1, 0.2, their sum and 0.3 were rounded alike
+    const s = run('c = a + b\nc - 0.3', [{ name: 'a', value: '0.1' }, { name: 'b', value: '0.2' }], [F.binary32]);
+    const dg = diagnose(s, F.binary32);
+    expect(dg.final.status).toBe('exact');
+    expect(dg.carried).toEqual([0, 1, 2, 3]);
+    // a shared digits function gives the same answer
+    const shared = diagnose(s, F.binary32, { root: s.result, shownOf: () => 7 });
+    expect(shared.carried).toEqual([0, 1, 2, 3]);
   });
 
   it('engine errors translate to Czech', () => {
@@ -135,7 +162,7 @@ describe('precision sweep', () => {
 describe('precision sweep reference lines', () => {
   it('the computed error is never below the best possible p-bit result, and the rel/abs curves differ only by log10|x|', async () => {
     const { EXAMPLES } = await import('../src/ui/examples.js');
-    for (const id of ['loop', 'harmonic', 'cancel', 'rump', 'needle', 'golden']) {
+    for (const id of ['loop', 'order', 'cancel', 'rump', 'needle', 'golden']) {
       const ex = EXAMPLES.find((e) => e.id === id);
       const out = runSweep({ variables: ex.variables, program: ex.program, mode: 'RNE', precisions: parsePrecisions('5-80:5'), expBits: null });
       for (const r of out.rows) {

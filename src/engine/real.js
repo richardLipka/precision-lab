@@ -16,7 +16,8 @@ import { EngineError } from './messages.js';
 
 export { Decimal };
 
-const MAX_DEC_EXP = 100000;
+/** Decimal exponents beyond ±MAX_DEC_EXP are not converted to exact fractions (they would have ~330 000 bits). */
+export const MAX_DEC_EXP = 100000;
 const ctxCache = new Map();
 
 /** decimal.js constructor with the given precision (cached). */
@@ -29,15 +30,24 @@ export function decCtx(precision) {
   return C;
 }
 
+/**
+ * The second (control) reference chain runs with REF_RATIO × the digits plus
+ * REF_EXTRA_DIGITS, so its own rounding errors are far below those of the first
+ * chain; digits on which both chains agree are reported as verified.
+ */
+const REF_RATIO = 1.5;
+const REF_EXTRA_DIGITS = 10;
+const refDigitsB = (d) => Math.ceil(d * REF_RATIO) + REF_EXTRA_DIGITS;
+
 let DIG = 60;
 let A = decCtx(60);
-let B = decCtx(100);
+let B = decCtx(refDigitsB(60));
 
 /** Set the precision (decimal digits) of the reference chain. */
 export function setRealDigits(d) {
   DIG = Math.max(20, Math.min(4000, Math.ceil(d)));
   A = decCtx(DIG);
-  B = decCtx(Math.ceil(DIG * 1.5) + 10);
+  B = decCtx(refDigitsB(DIG));
 }
 
 export function realDigits() {
@@ -71,8 +81,22 @@ function agreement(a, b) {
   return Math.max(0, Math.min(DIG - 1, -lg));
 }
 
-/** Build an approximate (irrational) exact value from the two chains. */
+/** Is a Decimal outside the range that is converted to exact fractions (|decimal exponent| > MAX_DEC_EXP)? */
+export function decBeyond(y) {
+  return !y.isFinite() || Math.abs(y.e) > MAX_DEC_EXP;
+}
+
+/**
+ * Build an approximate (irrational) exact value from the two chains.
+ * A value beyond ±10^MAX_DEC_EXP (exp(10⁶), a huge pow) cannot become a
+ * fraction; instead of aborting the whole program it is carried on as ∞
+ * (huge) or as 0 (tiny), marked `beyond` so the explanation can say so.
+ */
 export function approxValue(a, b, reliable = null) {
+  if (decBeyond(b) && !b.isNaN()) {
+    if (!b.isFinite() || b.e > 0) return { ...exact.inf(b.isNeg() ? 1 : 0), beyond: true };
+    return { kind: 'finite', approx: true, a, b, r: new Fraction(0), reliable: 0, beyond: true };
+  }
   return {
     kind: 'finite',
     approx: true,

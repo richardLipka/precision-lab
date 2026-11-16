@@ -91,6 +91,18 @@ describe('functions in binary64 vs JavaScript Math', () => {
     expect(fpFunction('sin', [fp.inf(0)], F.binary64, 'RNE').flags.invalid).toBe(true);
     expect(toDouble(fpFunction('sin', [fromDouble(1e22)], F.binary64, 'RNE').value)).toBe(Math.sin(1e22));
   });
+
+  it('reports the full IEEE flag set, shared with the arithmetic in ieee.js', () => {
+    const keys = ['divByZero', 'inexact', 'invalid', 'overflow', 'underflow'];
+    const lnZero = fpFunction('ln', [fp.zero(0)], F.binary64, 'RNE');
+    expect(Object.keys(lnZero.flags).sort()).toEqual(keys);
+    expect(lnZero.flags).toMatchObject({ divByZero: true, invalid: false, inexact: false });
+    const sqrtNeg = fpFunction('sqrt', [fromDouble(-1)], F.binary64, 'RNE');
+    expect(sqrtNeg.flags).toMatchObject({ invalid: true, divByZero: false, inexact: false });
+    const big = fpFunction('exp', [fromDouble(1000)], F.binary64, 'RNE');
+    expect(big.flags).toMatchObject({ overflow: true, inexact: true });
+    expect(Object.keys(fpFunction('exp', [fromDouble(1)], F.binary64, 'RNE').flags).sort()).toEqual(keys);
+  });
 });
 
 describe('functions in wide formats vs GNU MPFR', () => {
@@ -176,8 +188,8 @@ describe('examples', () => {
     });
   }
 
-  it('the new examples really fail in double', () => {
-    const fail = ['rump', 'recurrence', 'taylor', 'compound', 'golden', 'logistic'];
+  it('the examples that end with a failing variant really fail in double', () => {
+    const fail = ['rump', 'recurrence', 'taylor', 'compound', 'golden', 'logistic', 'intLimit', 'assoc', 'variance', 'quadratic', 'onecos'];
     for (const id of fail) {
       const ex = EXAMPLES.find((e) => e.id === id);
       const r = evaluate({ program: ex.program, variables: ex.variables, formats: [F.binary64], mode: 'RNE' });

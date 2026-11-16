@@ -52,6 +52,19 @@ export const FORMATS = [
   makeFormat({ id: 'binary128', name: 'binary128 (quad)', short: 'quad', p: 113, expBits: 15 }),
 ];
 
+/**
+ * Cast functions of the language: half(x), float(x), double(x) … store x into
+ * that format (the id of a FORMATS entry). See fpCast.
+ */
+export const CASTS = {
+  half: 'binary16',
+  bfloat16: 'bfloat16',
+  float: 'binary32',
+  double: 'binary64',
+  extended: 'x87',
+  quad: 'binary128',
+};
+
 export const ROUNDING_MODES = [
   { id: 'RNE', name: 'to nearest, ties to even (default)' },
   { id: 'RNA', name: 'to nearest, ties away from zero' },
@@ -86,12 +99,12 @@ export function isSubnormal(v, fmt) {
   return v.kind === 'finite' && fmt.bounded && exponentOf(v) < fmt.emin;
 }
 
-/** Exact rational value of a zero or finite FP value. */
 /** Signed integer significand (0 for zero). */
 function signedM(v) {
   return v.kind === 'zero' ? 0n : v.sign ? -v.m : v.m;
 }
 
+/** Exact rational value of a zero or finite FP value. */
 export function fpToFraction(v) {
   if (v.kind === 'zero') return ZERO;
   return dyadic(v.m, v.q, v.sign);
@@ -166,6 +179,13 @@ export function roundFraction(r, fmt, mode = 'RNE', zeroSign = 0) {
   const rem = num - M * den;
   const inexact = rem !== 0n;
   const twice = 2n * rem;
+  // Of the discarded part, two bits decide every rounding mode: the first
+  // discarded bit ("guard" here) and the OR of all later bits ("sticky");
+  // ties to even also look at the last kept bit, the directed modes at the sign.
+  // Hardware texts describe three bits (guard, round, sticky) because an adder
+  // keeps only p + 3 bits and a difference may still need a one-place left shift;
+  // after normalisation the bit beyond p is this guard bit and the decision is
+  // the same. We round the exact value, so no shift is ever pending.
   const guard = twice >= den ? 1 : 0; // first discarded bit
   const sticky = twice !== 0n && twice !== den; // nonzero bits after the guard bit
   let up = false;
@@ -217,7 +237,12 @@ export function fromExact(x, fmt, mode = 'RNE') {
 // (infinitely precise) result of the operation on the given FP operands.
 // ---------------------------------------------------------------------------
 
-function flagsFrom(round, extra = {}) {
+/**
+ * IEEE status flags of one operation: inexact, overflow and underflow come from
+ * the rounding (null for a special result), divByZero and invalid from `extra`.
+ * Shared with fpfunc.js so that every operation reports flags the same way.
+ */
+export function flagsFrom(round, extra = {}) {
   return {
     inexact: !!round?.inexact,
     overflow: !!round?.overflow,
@@ -227,12 +252,9 @@ function flagsFrom(round, extra = {}) {
   };
 }
 
-function special(value, exactOp, extra = {}) {
+/** Result of an operation decided without rounding (NaN, ∞, an exact zero …). */
+export function special(value, exactOp, extra = {}) {
   return { value, exactOp, round: null, flags: flagsFrom(null, extra) };
-}
-
-function finiteOrZero(v) {
-  return v.kind === 'finite' || v.kind === 'zero';
 }
 
 function roundedResult(r, fmt, mode, zeroSign) {
@@ -309,6 +331,72 @@ export function fpFma(a, b, c, fmt, mode = 'RNE') {
   return roundedResult(r, fmt, mode, zeroSign);
 }
 
+/**
+ * Order of two FP values: −1, 0 or 1, or null when they are unordered (a NaN).
+ * +0 and −0 are equal; ±∞ are below / above every finite number.
+ */
+export function fpOrder(a, b) {
+  if (a.kind === 'nan' || b.kind === 'nan') return null;
+  const rank = (v) => (v.kind === 'inf' ? (v.sign ? -1 : 1) : 0);
+  if (rank(a) !== rank(b) || rank(a) !== 0) return Math.sign(rank(a) - rank(b));
+  return fpToFraction(a).compare(fpToFraction(b));
+}
+
+/** Does the order c (−1, 0, 1 or null = unordered) satisfy the comparison op? */
+export function orderSatisfies(op, c) {
+  if (c == null) return op === '!=';
+  switch (op) {
+    case '==': return c === 0;
+    case '!=': return c !== 0;
+    case '<': return c < 0;
+    case '<=': return c <= 0;
+    case '>': return c > 0;
+    case '>=': return c >= 0;
+    default: throw new Error('unknown comparison ' + op);
+  }
+}
+
+/**
+ * Comparison a op b. The answer is exactly 1 or 0 in every format: nothing is
+ * rounded. IEEE 754 rules: a NaN is unordered, so every comparison with it is
+ * false except != (NaN == NaN is false), and +0 == −0. The quiet comparisons
+ * are modelled (as == and != are in C), so no flag is raised.
+ */
+export function fpCompare(op, a, b, fmt) {
+  const value = orderSatisfies(op, fpOrder(a, b)) ? roundFraction(new Fraction(1), fmt).value : fp.zero();
+  return special(value, fpToExact(value));
+}
+
+/**
+ * Cast: store the stored value a of a column whose format is fmt into the
+ * format `target`, then hold the result in fmt again. Both steps round with
+ * the active mode; the second one is exact whenever target ⊆ fmt. The
+ * operation's ideal result is a itself, so exactOp = a and the step's error is
+ * the effect of the two roundings together.
+ * round: the rounding into `target` (its neighbours, guard and sticky bits),
+ *   with value, direction and flags of the whole cast.
+ * cast: {target, mid (value in target), r1 (a → target), r2 (mid → fmt, null for ±∞)}
+ */
+export function fpCast(a, target, fmt, mode = 'RNE') {
+  if (a.kind === 'nan' || a.kind === 'inf') return { ...special(a, fpToExact(a)), cast: { target: target.id, mid: a, r1: null, r2: null } };
+  const x = fpToFraction(a);
+  const r1 = roundFraction(x, target, mode, a.sign);
+  const mid = r1.value;
+  const r2 = mid.kind === 'inf' ? null : roundFraction(fpToFraction(mid), fmt, mode, mid.sign);
+  const value = r2 ? r2.value : mid;
+  const moved = value.kind === 'inf' ? 1 : fpToFraction(value).compare(x);
+  const round = {
+    ...r1,
+    value,
+    inexact: r1.inexact || !!r2?.inexact,
+    overflow: r1.overflow || !!r2?.overflow,
+    underflow: r1.underflow || !!r2?.underflow,
+    tiny: r1.tiny || !!r2?.tiny,
+    direction: moved === 0 ? 'exact' : (value.kind === 'inf' ? value.sign === 0 : moved > 0) ? 'up' : 'down',
+  };
+  return { value, exactOp: fpToExact(a), round, flags: flagsFrom(round), cast: { target: target.id, mid, r1, r2 } };
+}
+
 export function fpOp(op, args, fmt, mode) {
   switch (op) {
     case '+': return fpAdd(args[0], args[1], fmt, mode);
@@ -318,7 +406,10 @@ export function fpOp(op, args, fmt, mode) {
     case 'fma': return fpFma(args[0], args[1], args[2], fmt, mode);
     case 'neg': { const v = fpNeg(args[0]); return special(v, fpToExact(v)); }
     case 'abs': { const v = fpAbs(args[0]); return special(v, fpToExact(v)); }
-    default: throw new Error('unknown operation ' + op);
+    case '==': case '!=': case '<': case '<=': case '>': case '>=': return fpCompare(op, args[0], args[1], fmt);
+    default:
+      if (CASTS[op]) return fpCast(args[0], FORMATS.find((f) => f.id === CASTS[op]), fmt, mode);
+      throw new Error('unknown operation ' + op);
   }
 }
 
@@ -456,5 +547,3 @@ export function formatFacts(fmt) {
   }
   return out;
 }
-
-export { Fraction };

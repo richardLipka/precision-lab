@@ -14,6 +14,7 @@
       <p class="tagline" data-i18n="app.tagline"></p>
     </div>
     <div class="header-actions">
+      <button id="help" class="btn ghost" aria-controls="intro" data-i18n="btn.help" data-i18n-title="btn.help.title"></button>
       <button id="lang" class="btn ghost" data-i18n="btn.lang" data-i18n-title="btn.lang.title"></button>
       <button id="share" class="btn ghost" data-i18n="btn.copyLink" data-i18n-title="btn.copyLink.title"></button>
       <button id="theme" class="btn ghost" data-i18n="btn.theme" data-i18n-title="btn.theme.title"></button>
@@ -48,6 +49,8 @@
             <li data-i18n-html="syntax.repeat"></li>
             <li data-i18n-html="syntax.fn"></li>
             <li data-i18n-html="syntax.fns"></li>
+            <li data-i18n-html="syntax.cmp"></li>
+            <li data-i18n-html="syntax.cast"></li>
             <li data-i18n-html="syntax.comment"></li>
             <li data-i18n-html="syntax.order"></li>
           </ul>
@@ -56,19 +59,22 @@
 
       <section>
         <h2 data-i18n="setup.formats"></h2>
+        <p class="muted small" data-i18n-html="setup.formatsHint"></p>
         <div id="formats" class="formats"></div>
         <div class="custom-fmt">
           <label class="check"><input type="checkbox" id="custom-on" /> <span data-i18n="setup.customFmt"></span></label>
           <label>p <input type="number" id="custom-p" min="1" max="100000" value="100" /> <span data-i18n="setup.bits"></span></label>
           <label><span data-i18n="setup.exp"></span> <input type="number" id="custom-e" min="2" max="30" value="15" /> <span data-i18n="setup.bits"></span></label>
-          <label class="check"><input type="checkbox" id="custom-unb" checked /> <span data-i18n="setup.unbounded"></span></label>
+          <label class="check" data-i18n-title="setup.unboundedTitle"><input type="checkbox" id="custom-unb" checked /> <span data-i18n="setup.unbounded"></span></label>
         </div>
         <p class="muted small" data-i18n="setup.exactNote"></p>
+        <p class="muted small" data-i18n="setup.platformNote"></p>
       </section>
 
       <section>
         <label class="label" for="mode" data-i18n="setup.mode"></label>
         <select id="mode"></select>
+        <p id="mode-hint" class="muted small" aria-live="polite"></p>
         <label class="check"><input type="checkbox" id="show-const" checked /> <span data-i18n="setup.showConst"></span></label>
         <label class="label" for="ref-digits" data-i18n="setup.refDigits"></label>
         <input type="number" id="ref-digits" min="20" max="1000" value="60" class="ref-digits" />
@@ -77,13 +83,22 @@
     </aside>
 
     <section class="results" aria-label="Results">
+      <div id="intro" class="panel intro" hidden>
+        <div class="section-title"><h2 data-i18n="intro.title"></h2><button id="intro-close" class="btn small" data-i18n="intro.close"></button></div>
+        <ul class="intro-list">
+          <li data-i18n-html="intro.what"></li>
+          <li data-i18n-html="intro.click"></li>
+          <li data-i18n-html="intro.views"></li>
+        </ul>
+      </div>
       <div class="view-tabs" role="tablist">
-        <button class="view-tab" role="tab" data-view="compare" data-i18n="view.compare"></button>
-        <button class="view-tab" role="tab" data-view="sweep" data-i18n="view.sweep"></button>
-        <button class="view-tab" role="tab" data-view="rewrite" data-i18n="view.rewrite"></button>
+        <button class="view-tab" role="tab" data-view="compare"><span data-i18n="view.compare"></span><span class="view-sub" data-i18n="view.compare.sub"></span></button>
+        <button class="view-tab" role="tab" data-view="sweep"><span data-i18n="view.sweep"></span><span class="view-sub" data-i18n="view.sweep.sub"></span></button>
+        <button class="view-tab" role="tab" data-view="rewrite"><span data-i18n="view.rewrite"></span><span class="view-sub" data-i18n="view.rewrite.sub"></span></button>
       </div>
 
       <div id="view-compare" class="view">
+        <div id="stale" class="notice stale-banner" role="status" hidden></div>
         <div id="summary" class="summary"></div>
         <div id="diagnosis" class="panel diagnosis"></div>
         <div class="panel">
@@ -99,6 +114,8 @@
         </div>
         <div class="panel">
           <div class="section-title"><h2 data-i18n="steps.title"></h2><span id="step-count" class="muted small"></span></div>
+          <p class="muted small steps-hint" data-i18n="steps.hint"></p>
+          <div id="steps-legend"></div>
           <div class="table-scroll"><table id="steps" class="steps"></table></div>
           <div id="pager" class="pager"></div>
         </div>

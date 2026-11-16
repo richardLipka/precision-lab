@@ -44,6 +44,7 @@ function niceStep(range, target = 5) {
  * @param {string} [o.ariaLabel]
  * @param {string} [o.emptyText]
  * @param {{x:number,y:number,cls?:string}[]} [o.markers]
+ * @param {{y:number,label:string}[]} [o.bands] labelled horizontal reference lines (e.g. the "exact" level)
  * @param {number} [o.height]
  */
 export function renderLineChart(host, o) {
@@ -112,6 +113,11 @@ export function renderLineChart(host, o) {
     xl.textContent = o.xLabel;
   }
   el('line', { x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih, class: 'baseline' }, svg);
+  for (const b of o.bands || []) {
+    el('line', { x1: m.l, x2: W - m.r, y1: sy(b.y), y2: sy(b.y), class: 'band-line' }, svg);
+    const bt = el('text', { x: m.l + 4, y: sy(b.y) - 4, class: 'axis-label band-label', 'text-anchor': 'start' }, svg);
+    bt.textContent = b.label;
+  }
 
   // Lines
   for (const s of series) {

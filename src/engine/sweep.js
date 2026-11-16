@@ -3,13 +3,23 @@
 
 import { evaluate } from './evaluator.js';
 import { makeFormat, shortestDecimal, exactShort, roundFraction, fpToFraction } from './ieee.js';
-import { compareToExact } from './metrics.js';
+import { compareToExact, rawDigits, capDigits, fullDigits, LOG10_2 } from './metrics.js';
 import { fmtFrac, log10Abs, log2Big, dyadic } from './rational.js';
 import { EngineError } from './messages.js';
 import { approxText } from './real.js';
 
-export const LOG10_2 = Math.log10(2);
+export { LOG10_2 };
 export const MAX_PRECISION = 100000;
+
+// Thresholds of the convergence summary (they choose which sentence is shown).
+/** A gain of more than 8 digits between neighbouring precisions is a "sharp threshold" (Rump-like), not gradual convergence. */
+const JUMP_DIGITS = 8;
+/** Slope (digits per bit) above which the result is said to converge; the ideal is log10 2 ≈ 0.30. */
+const SLOPE_CONVERGES = 0.12;
+/** Slope above which a still inaccurate result is said to be "not yet" converging rather than showing no trend. */
+const SLOPE_NOT_YET = 0.05;
+/** A step to the next precision that loses more than 2 digits counts as an irregular drop. */
+const DROP_DIGITS = 2;
 export const MAX_SWEEP_POINTS = 1000;
 
 /**
@@ -42,11 +52,12 @@ export function parsePrecisions(text) {
 }
 
 /**
- * Fast correct-digit count for the sweep: |v − X| / |X| computed with plain
- * BigInt arithmetic (no fraction reduction), exact to ~15 digits in the log.
+ * Fast RAW correct-digit count for the sweep (same convention as rawDigits in
+ * metrics.js): |v − X| / |X| computed with plain BigInt arithmetic (no fraction
+ * reduction), exact to ~15 digits in the log. Views cap it with capDigits.
  */
 function fastDigits(v, X, fmt) {
-  if (X.kind !== 'finite' || (v.kind !== 'finite' && v.kind !== 'zero')) return digitsOf(compareToExact(v, X, fmt));
+  if (X.kind !== 'finite' || (v.kind !== 'finite' && v.kind !== 'zero')) return rawDigits(compareToExact(v, X, fmt));
   const vm = v.kind === 'zero' ? 0n : v.sign ? -v.m : v.m;
   const q = v.kind === 'zero' ? 0 : v.q;
   const k = q < 0 ? -q : 0;
@@ -60,12 +71,6 @@ function fastDigits(v, X, fmt) {
   const lrel = (log2Big(diff) - log2Big(B < 0n ? -B : B)) * LOG10_2;
   const d = Math.max(0, -lrel);
   return X.approx ? Math.min(d, X.reliable) : d;
-}
-
-function digitsOf(cmp) {
-  if (cmp.status === 'exact' || cmp.status === 'both-inf' || cmp.status === 'both-nan') return Infinity;
-  if (cmp.status === 'approx') return cmp.rel ? cmp.digits : 0;
-  return null; // not comparable (∞ / NaN versus a finite true value)
 }
 
 /**
@@ -111,7 +116,7 @@ export function runSweep(cfg, onProgress) {
           value: f.p <= 128 ? shortestDecimal(v, f) : (v.kind === 'finite' ? fmtFrac(fracOf(v), 30) : shortestDecimal(v, f)),
           kind: v.kind,
           status: cmp.status,
-          digits: digitsOf(cmp),
+          digits: rawDigits(cmp), // raw; capped at p·log10 2 for display and analysis
           log10Abs: cmp.status === 'exact' ? -Infinity : cmp.status === 'approx' ? log10(cmp.abs) : Infinity,
           log10Rel: cmp.status === 'exact' ? -Infinity : cmp.status === 'approx' && cmp.rel ? cmp.log10Rel : Infinity,
           absText: cmp.status === 'approx' ? fmtFrac(cmp.abs, 3, { plainMin: -3, plainMax: 5 }) : null,
@@ -157,7 +162,8 @@ function fracOf(v) {
  * All numbers; the UI writes the sentences.
  */
 export function analyzeConvergence(rows, meta) {
-  const pts = rows.filter((r) => r.final).map((r) => ({ p: r.p, d: r.final.digits, final: r.final }));
+  // Shown (capped) digits, the same figure the chart, the table and the other views use.
+  const pts = rows.filter((r) => r.final).map((r) => ({ p: r.p, d: capDigits(r.final.digits, fullDigits(r.p)), final: r.final }));
   if (!pts.length || meta?.exactKind !== 'finite') return { kind: 'undefined' };
   const comparable = pts.filter((x) => x.d != null);
   if (!comparable.length) return { kind: 'noComparable' };
@@ -174,6 +180,9 @@ export function analyzeConvergence(rows, meta) {
     return p;
   };
   const exactFrom = from((d) => d === Infinity);
+  // Is every step (not only the result) exact from exactFrom on? Otherwise the exact
+  // result comes from rounding errors that cancel (x/x with x = 0.1), not from fitting into p bits.
+  const allStepsExact = exactFrom != null && rows.every((r) => !r.final || r.p < exactFrom || !r.digits || r.digits.every((d) => d === Infinity));
   const oneFrom = from((d) => d >= 1);
   const sixFrom = from((d) => d >= 6);
 
@@ -181,10 +190,10 @@ export function analyzeConvergence(rows, meta) {
   let jump = null;
   for (let i = 1; i < comparable.length; i++) {
     const a = comparable[i - 1].d;
-    const b = Math.min(comparable[i].d, comparable[i].p * LOG10_2 + 1);
+    const b = Math.min(comparable[i].d, fullDigits(comparable[i].p) + 1);
     if (a === Infinity) continue;
     const gain = b - a;
-    if (gain > 8 && (!jump || gain > jump.gain)) jump = { from: comparable[i - 1].p, to: comparable[i].p, gain, dFrom: a, dTo: comparable[i].d };
+    if (gain > JUMP_DIGITS && (!jump || gain > jump.gain)) jump = { from: comparable[i - 1].p, to: comparable[i].p, gain, dFrom: a, dTo: comparable[i].d };
   }
   // Digits lost by the computation: ideal p·log10(2) minus achieved. Measured in the
   // regular regime: after any threshold jump and after the first correct digit,
@@ -195,7 +204,7 @@ export function analyzeConvergence(rows, meta) {
   const upper = regular.filter((x) => x.p >= (start + pMax) / 2);
   const sample = upper.length >= 3 ? upper : regular.length >= 3 ? regular : finitePts;
   // loss = digits of the best possible p-bit result minus the digits achieved
-  const bestOf = (x) => (Number.isFinite(x.final.bestDigits) ? x.final.bestDigits : x.p * LOG10_2);
+  const bestOf = (x) => (Number.isFinite(x.final.bestDigits) ? capDigits(x.final.bestDigits, fullDigits(x.p)) : fullDigits(x.p));
   const losses = sample.map((x) => bestOf(x) - x.d).sort((a, b) => a - b);
   const loss = losses.length ? losses[Math.floor(losses.length / 2)] : null;
 
@@ -216,22 +225,22 @@ export function analyzeConvergence(rows, meta) {
   for (let i = 1; i < comparable.length; i++) {
     const a = comparable[i - 1].d;
     const b = comparable[i].d;
-    if (a !== Infinity && b !== Infinity && b < a - 2) drops++;
+    if (a !== Infinity && b !== Infinity && b < a - DROP_DIGITS) drops++;
   }
 
   let kind;
   if (last.d === Infinity) kind = 'exact';
   else if (last.d == null) kind = 'special';
-  else if (last.d >= 1 && slope != null && slope > 0.12) kind = 'converges';
+  else if (last.d >= 1 && slope != null && slope > SLOPE_CONVERGES) kind = 'converges';
   else if (last.d >= 1) kind = 'convergesSlow';
-  else if (slope != null && slope > 0.05) kind = 'notYet';
+  else if (slope != null && slope > SLOPE_NOT_YET) kind = 'notYet';
   else kind = 'noTrend';
 
   // Model-based extrapolation (only used when the range is too short).
   const estimate = (D) => (loss != null ? Math.ceil((D + Math.max(0, loss)) / LOG10_2) : null);
   const fifteenFrom = from((d) => d >= 15);
   return {
-    kind, pMin, pMax, exactFrom, oneFrom, sixFrom, fifteenFrom, loss, slope, drops, jump,
+    kind, pMin, pMax, exactFrom, allStepsExact, oneFrom, sixFrom, fifteenFrom, loss, slope, drops, jump,
     lastDigits: last.d, lastValue: last.final.value,
     estimate1: oneFrom == null ? estimate(1) : null,
   };

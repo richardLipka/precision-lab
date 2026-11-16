@@ -84,7 +84,9 @@ const intLit = (k) => ({ type: 'num', text: String(k), value: { kind: 'finite', 
 // Printing with the minimal parentheses that keep the tree shape
 // ---------------------------------------------------------------------------
 
-const PREC = { '+': 1, '-': 1, '*': 2, '/': 2 };
+// Comparisons bind most loosely and cannot be chained, so a comparison operand
+// that is itself a comparison always keeps its parentheses.
+const PREC = { '==': 0, '!=': 0, '<': 0, '<=': 0, '>': 0, '>=': 0, '+': 1, '-': 1, '*': 2, '/': 2 };
 
 function prec(n) {
   if (n.type === 'bin') return PREC[n.op];
@@ -107,9 +109,9 @@ export function print(n) {
     }
     case 'bin': {
       const p = PREC[n.op];
-      const l = prec(n.left) < p ? `(${print(n.left)})` : print(n.left);
+      const l = prec(n.left) < p || (p === 0 && prec(n.left) === 0) ? `(${print(n.left)})` : print(n.left);
       // A right operand of the same precedence must keep its parentheses: a − (b − c), a + (b + c).
-      const r = prec(n.right) <= p || n.right.type === 'neg' ? `(${print(n.right)})` : print(n.right);
+      const r = prec(n.right) <= p || (n.right.type === 'neg' && p > 0) ? `(${print(n.right)})` : print(n.right);
       const sym = n.op;
       return `${l} ${sym} ${r}`;
     }
@@ -317,6 +319,13 @@ export function replaceExpression(program, index, newExpr) {
 import { evaluate } from './evaluator.js';
 import { log10Abs } from './rational.js';
 
+/**
+ * Two irrational references count as equal when they agree to all but the last
+ * 3 of their verified digits: different evaluation orders round differently in
+ * the final digits, which must not be reported as a change of meaning.
+ */
+const EQUAL_SLACK_DIGITS = 3;
+
 /** Equality of two exact values (irrational ones within their verified digits). */
 export function exactEqual(x, y) {
   if (x.kind !== y.kind) return false;
@@ -327,7 +336,7 @@ export function exactEqual(x, y) {
   if (diff.n === 0n) return true;
   const digits = Math.min(x.approx ? x.reliable : 1e9, y.approx ? y.reliable : 1e9);
   const scale = Math.max(log10Abs(x.r), log10Abs(y.r));
-  return log10Abs(diff) - scale < -(digits - 3);
+  return log10Abs(diff) - scale < -(digits - EQUAL_SLACK_DIGITS);
 }
 
 /**

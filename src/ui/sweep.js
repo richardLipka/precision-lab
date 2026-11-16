@@ -3,7 +3,9 @@
 // digits step by step with one line per precision, (3) a convergence verdict.
 
 import { renderLineChart, escapeHtml } from './chart.js';
-import { parsePrecisions, LOG10_2 } from '../engine/sweep.js';
+import { parsePrecisions } from '../engine/sweep.js';
+import { LOG10_2, NOTABLE_DIGITS, digitsInfo, fullDigits, exactLevel, qualityOf } from '../engine/metrics.js';
+import { digitsText, QUALITY_ICON, badgeLegendHtml } from './detail.js';
 import { t, errorText } from '../i18n.js';
 
 const SEQ_STEPS = 10;
@@ -59,7 +61,7 @@ export function createSweepPanel(host, api) {
           <select id="sw-lines"><option>5</option><option>10</option><option>20</option><option>40</option></select></label></div>
       <div id="sw-chart-steps"></div>
     </div>
-    <div class="panel"><details id="sw-table-wrap"><summary><h2 class="inline-h" data-s="table"></h2></summary><div class="table-scroll"><table class="steps sweep-table" id="sw-table"></table></div></details></div>`;
+    <div class="panel"><details id="sw-table-wrap"><summary><h2 class="inline-h" data-s="table"></h2></summary><div id="sw-legend"></div><div class="table-scroll"><table class="steps sweep-table" id="sw-table"></table></div></details></div>`;
 
   const $ = (id) => host.querySelector('#' + id);
   $('sw-spec').value = st.spec;
@@ -198,7 +200,8 @@ export function createSweepPanel(host, api) {
       case 'noComparable': p('an.noComparable', {}, 'bad'); break;
       default: {
         const verdictCls = an.kind === 'converges' || an.kind === 'exact' ? 'good' : an.kind === 'convergesSlow' ? '' : 'bad';
-        if (an.kind === 'exact') p('an.exact', { exactFrom: an.exactFrom }, verdictCls);
+        // "all intermediate results fit" only when they really are all exact; otherwise their errors cancelled.
+        if (an.kind === 'exact') p(an.allStepsExact ? 'an.exact' : 'an.exactLucky', { exactFrom: an.exactFrom }, verdictCls);
         else if (an.kind === 'converges') p('an.converges', { slope: an.slope.toFixed(3) }, verdictCls);
         else if (an.kind === 'convergesSlow') p('an.convergesSlow', { slope: (an.slope ?? 0).toFixed(3) });
         else if (an.kind === 'notYet') p('an.notYet', { pMax: an.pMax, est: an.estimate1 ?? '?' }, verdictCls);
@@ -206,7 +209,7 @@ export function createSweepPanel(host, api) {
         else if (an.kind === 'special') p('an.special', {}, 'bad');
         p('an.thresholds', { one: an.oneFrom ?? nr, six: an.sixFrom ?? nr, fifteen: an.fifteenFrom ?? nr });
         if (an.jump) p('an.jump', { from: an.jump.from, to: an.jump.to, dFrom: an.jump.dFrom.toFixed(1), dTo: an.jump.dTo === Infinity ? '∞' : an.jump.dTo.toFixed(1) });
-        if (an.loss != null && an.loss > 1) p('an.loss', { loss: an.loss.toFixed(1), bits: Math.ceil(an.loss / LOG10_2) });
+        if (an.loss != null && an.loss >= NOTABLE_DIGITS) p('an.loss', { loss: an.loss.toFixed(1), bits: Math.ceil(an.loss / LOG10_2) });
         else if (an.kind === 'converges' || an.kind === 'exact') p('an.lossNone');
         if (an.drops) p('an.drops', { drops: an.drops });
         p('an.final', { pMax: an.pMax, value: an.lastValue, digits: an.lastDigits === Infinity ? '∞' : an.lastDigits == null ? '—' : an.lastDigits.toFixed(1), exact: meta.exact }, 'muted');
@@ -220,14 +223,20 @@ export function createSweepPanel(host, api) {
     const rows = out.rows.filter((r) => r.final);
     const xs = rows.map((r) => r.p);
     const exLog = out.meta.exactLog10;
-    const cap = (p) => p * LOG10_2 + 1; // where "exact" is drawn on the digits scale
+    // Digits are shown capped at p·log10 2 (metrics.js); "exact" is ONE labelled level
+    // above the largest capacity in the chart, as in the format comparison chart.
+    const level = exactLevel(fullDigits(Math.max(1, ...rows.map((r) => r.p))));
+    const shownAt = (raw, p) => {
+      const dg = digitsInfo(raw, fullDigits(p));
+      return dg.shown == null ? null : dg.shown === Infinity ? level : dg.shown;
+    };
     let vals;
     let best;
     let bound;
     if (measure === 'digits') {
-      vals = rows.map((r) => (r.final.digits == null ? null : r.final.digits === Infinity ? cap(r.p) : r.final.digits));
-      best = rows.map((r) => (r.final.bestDigits == null ? null : r.final.bestDigits === Infinity ? cap(r.p) : r.final.bestDigits));
-      bound = rows.map((r) => r.p * LOG10_2);
+      vals = rows.map((r) => shownAt(r.final.digits, r.p));
+      best = rows.map((r) => shownAt(r.final.bestDigits, r.p));
+      bound = null; // the capped best possible result already lies on p·log10 2
     } else {
       const key = measure === 'abs' ? 'log10Abs' : 'log10Rel';
       const bkey = measure === 'abs' ? 'bestLog10Abs' : 'bestLog10Rel';
@@ -235,10 +244,10 @@ export function createSweepPanel(host, api) {
       best = rows.map((r) => (Number.isFinite(r.final[bkey]) ? r.final[bkey] : null));
       bound = rows.map((r) => (measure === 'abs' ? (Number.isFinite(exLog) ? exLog - r.p * LOG10_2 : null) : -r.p * LOG10_2));
     }
-    const finiteVals = [...vals, ...best, ...bound].filter((v) => v != null && Number.isFinite(v));
+    const finiteVals = [...vals, ...best, ...(bound || [])].filter((v) => v != null && Number.isFinite(v));
     let yMin = finiteVals.length ? Math.min(...finiteVals) : 0;
     let yMax = finiteVals.length ? Math.max(...finiteVals) : 1;
-    if (measure !== 'digits') { yMin = Math.floor(yMin) - 1; yMax = Math.ceil(yMax) + 1; } else { yMin = 0; yMax = Math.ceil(yMax) + 1; }
+    if (measure !== 'digits') { yMin = Math.floor(yMin) - 1; yMax = Math.ceil(yMax) + 1; } else { yMin = 0; yMax = Math.ceil(Math.max(yMax, level)) + 1; }
     const markers = [];
     if (measure !== 'digits') {
       // zero error cannot be drawn on a log scale: markers on the bottom edge
@@ -255,9 +264,10 @@ export function createSweepPanel(host, api) {
       series: [
         { id: 'measured', label: t('sweep.measured'), color: 'var(--series-1)', values: vals },
         { id: 'best', label: t('sweep.best'), color: 'var(--series-3)', values: best, dashed: true, width: 1.5 },
-        { id: 'bound', label: t('sweep.bound'), color: 'var(--muted)', values: bound, dotted: true, width: 1.25 },
+        ...(bound ? [{ id: 'bound', label: t('sweep.bound'), color: 'var(--muted)', values: bound, dotted: true, width: 1.25 }] : []),
       ],
       yMin, yMax, markers,
+      bands: measure === 'digits' ? [{ y: level, label: t('chart.exact') }] : [],
       yLabel: measure === 'abs' ? t('sweep.axisAbs') : measure === 'rel' ? t('sweep.axisRel') : t('chart.digits'),
       xLabel: t('sweep.axisP'),
       yTick,
@@ -268,12 +278,14 @@ export function createSweepPanel(host, api) {
         if (s.id === 'measured') {
           if (f.status === 'exact') return t('sweep.exactPoint');
           if (f.digits == null) return t('sweep.notComparable');
-          return measure === 'digits' ? f.digits.toFixed(1) : `${f.absText ?? ''} · ${f.digits.toFixed(1)} d`;
+          const dg = digitsText(digitsInfo(f.digits, fullDigits(rows[i].p)));
+          return measure === 'digits' ? dg : `${f.absText ?? ''} · ${dg} d`;
         }
         if (s.id === 'best') {
           if (f.bestDigits === Infinity) return t('sweep.exactPoint');
           if (f.bestDigits == null && f.bestText == null) return '—';
-          return measure === 'digits' ? f.bestDigits.toFixed(1) : `${f.bestText} · ${f.bestDigits == null ? '—' : f.bestDigits.toFixed(1)} d`;
+          const dg = f.bestDigits == null ? '—' : digitsText(digitsInfo(f.bestDigits, fullDigits(rows[i].p)));
+          return measure === 'digits' ? dg : `${f.bestText} · ${dg} d`;
         }
         return v == null ? '—' : measure === 'digits' ? v.toFixed(1) : `1e${v.toFixed(1)}`;
       },
@@ -292,26 +304,35 @@ export function createSweepPanel(host, api) {
     }
     const steps = out.meta.steps;
     const xs = steps.map((s) => s.id);
+    // One common, labelled "exact" level above the largest capacity shown (as in the other charts).
+    const level = exactLevel(fullDigits(Math.max(...pick.map((idx) => out.rows[idx].p))));
     const series = pick.map((idx, i) => {
       const r = out.rows[idx];
       return {
         id: 'p' + r.p,
         label: `p=${r.p}`,
         color: seqColor(i, pick.length),
-        values: Array.from(r.digits, (d) => (Number.isNaN(d) ? null : d === Infinity ? r.p * LOG10_2 + 1 : d)),
+        values: Array.from(r.digits, (d) => {
+          if (Number.isNaN(d)) return null;
+          const dg = digitsInfo(d, fullDigits(r.p));
+          return dg.shown === Infinity ? level : dg.shown;
+        }),
       };
     });
     renderLineChart($('sw-chart-steps'), {
       xs,
       series,
       yMin: 0,
+      yMax: Math.ceil(level + 1),
+      bands: [{ y: level, label: t('chart.exact') }],
       yLabel: t('chart.digits'),
       xTick: (x) => '#' + x,
       legend: { gradient: [0, 3, 6, 9].map((k) => `var(--seq-${k})`), low: `${t('sweep.legendLow')} (p=${out.rows[pick[0]].p})`, high: `${t('sweep.legendHigh')} (p=${out.rows[pick[pick.length - 1]].p})`, note: t('sweep.linesShown', { n: pick.length, total: out.rows.length }) },
       tipTitle: (x) => `#${x} ${steps[x].text}`,
       tipValue: (s, v, i) => {
-        const raw = out.rows[pick[series.indexOf(s)]].digits[i];
-        return Number.isNaN(raw) ? '—' : raw === Infinity ? t('chart.exact') : raw.toFixed(1);
+        const row = out.rows[pick[series.indexOf(s)]];
+        const raw = row.digits[i];
+        return Number.isNaN(raw) ? '—' : raw === Infinity ? t('chart.exact') : digitsText(digitsInfo(raw, fullDigits(row.p)));
       },
       onPick: (x) => api.openPrecision(out.rows[pick[pick.length - 1]].p, out.expBits, x),
       ariaLabel: t('sweep.chartSteps'),
@@ -324,10 +345,16 @@ export function createSweepPanel(host, api) {
     const body = out.rows.map((r) => {
       const f = r.final;
       if (!f) return '';
-      const d = f.status === 'exact' ? `<span class="badge q-exact">${t('badge.exact')}</span>` : f.digits == null ? `<span class="badge q-bad">✕</span>` : `<span class="badge ${f.digits >= 0.85 * r.p * LOG10_2 ? 'q-good' : f.digits >= 1 ? 'q-mid' : 'q-bad'}">${f.digits.toFixed(1)}</span>`;
+      // same capped figure and colour thresholds as the badges of the other views
+      const dg = digitsInfo(f.digits, fullDigits(r.p));
+      const q = dg.shown == null ? 'q-bad' : qualityOf(dg.shown, dg.full);
+      const d = f.status === 'exact' ? `<span class="badge q-exact">${t('badge.exact')}</span>`
+        : dg.shown == null ? `<span class="badge q-bad" title="${escapeHtml(t('badge.mismatchTitle'))}">${t('badge.mismatch')}</span>`
+          : `<span class="badge ${q}"${dg.capped ? ` title="${escapeHtml(digitsText(dg))}"` : ''}>${QUALITY_ICON[q] || ''}${escapeHtml(t('badge.digits', { d: dg.shown.toFixed(1) }))}</span>`;
       return `<tr><td class="num">${r.p}</td><td class="mono long">${escapeHtml(f.value)}</td><td class="mono">${escapeHtml(f.absText ?? (f.status === 'exact' ? '0' : '—'))}</td><td>${d}</td><td><button class="btn small" data-open="${r.p}" title="${escapeHtml(t('sweep.openTitle', { p: r.p }))}">${t('sweep.open')}</button></td></tr>`;
     }).join('');
     $('sw-table').innerHTML = head + `<tbody>${body}</tbody>`;
+    $('sw-legend').innerHTML = badgeLegendHtml();
     $('sw-table').querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => api.openPrecision(Number(b.dataset.open), out.expBits)));
   }
 

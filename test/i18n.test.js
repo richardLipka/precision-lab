@@ -30,6 +30,8 @@ describe('cs/en parity', () => {
   it('examples are described in both languages', () => {
     for (const e of EXAMPLES) {
       expect(e.title.en && e.title.cs && e.blurb.en && e.blurb.cs, e.id).toBeTruthy();
+      expect(e.lesson?.en && e.lesson?.cs && e.look?.en && e.look?.cs, `${e.id}: lesson and look`).toBeTruthy();
+      expect(DICT.en['exgroup.' + e.group] && DICT.cs['exgroup.' + e.group], `${e.id}: group ${e.group}`).toBeTruthy();
     }
   });
 
@@ -43,20 +45,35 @@ describe('cs/en parity', () => {
       for (const m of src.matchAll(/data-i18n(?:-html|-title|-aria|-placeholder)?="([\w.]+)"/g)) if (!(m[1] in DICT.en)) missing.push(`${f}: ${m[1]}`);
       for (const m of src.matchAll(/data-s="([\w.]+)"/g)) if (!(('sweep.' + m[1]) in DICT.en)) missing.push(`${f}: sweep.${m[1]}`);
     }
-    // Explanation codes and causes produced by the engine
+    // Every quoted key-like literal ('prefix.name' with a prefix the dictionary uses) must be a key,
+    // wherever it stands: push('…'), a ternary push(c ? 'a' : 'b'), const code = …, key('…'), t(c ? 'a' : 'b').
+    const prefixes = new Set(Object.keys(DICT.en).map((k) => k.split('.')[0]));
+    const keyLiterals = (src) => [...src.matchAll(/'([a-zA-Z]+)\.([\w.]*\w)'/g)].filter((m) => prefixes.has(m[1])).map((m) => `${m[1]}.${m[2]}`);
     const ex = read('src/engine/explain.js');
-    for (const m of ex.matchAll(/push\('([\w.]+)'/g)) if (!(m[1] in DICT.en)) missing.push('explain: ' + m[1]);
-    for (const m of ex.matchAll(/key\('([\w.]+)'\)/g)) if (!(m[1] in DICT.en)) missing.push('explain key: ' + m[1]);
-    for (const m of ex.matchAll(/setCause\('(\w+)'/g)) {
-      if (!(('cause.' + m[1]) in DICT.en)) missing.push('cause: ' + m[1]);
-      if (!(('cause.' + m[1] + '.tip') in DICT.en)) missing.push('cause tip: ' + m[1]);
+    for (const f of ['src/engine/explain.js', 'src/main.js', ...readdirSync(join(root, 'src/ui')).map((x) => 'src/ui/' + x)]) {
+      for (const k of keyLiterals(read(f))) if (!(k in DICT.en)) missing.push(`${f}: ${k}`);
     }
-    for (const m of ex.matchAll(/'(budget\.\w+)'/g)) if (!(m[1] in DICT.en)) missing.push('budget: ' + m[1]);
+    // Causes: setCause('x', …) and setCause(c ? 'x' : 'y', …) — the literal results of the first argument
+    for (const m of ex.matchAll(/setCause\(([^,]+),/g)) {
+      for (const c of m[1].matchAll(/(?:^|[?:])\s*'(\w+)'/g)) {
+        if (!(('cause.' + c[1]) in DICT.en)) missing.push('cause: ' + c[1]);
+        if (!(('cause.' + c[1] + '.tip') in DICT.en)) missing.push('cause tip: ' + c[1]);
+      }
+    }
     // Engine error codes
-    for (const f of ['src/engine/parser.js', 'src/engine/evaluator.js', 'src/engine/ieee.js', 'src/engine/sweep.js']) {
+    for (const f of ['src/engine/parser.js', 'src/engine/evaluator.js', 'src/engine/ieee.js', 'src/engine/sweep.js', 'src/engine/real.js', 'src/engine/fpfunc.js']) {
       for (const m of read(f).matchAll(/EngineError\('([\w.]+)'/g)) if (!(m[1] in ENGINE_MESSAGES.en)) missing.push(`${f}: ${m[1]}`);
     }
     expect(missing).toEqual([]);
+  });
+
+  it('the key check also sees codes chosen by a ternary or a variable', () => {
+    // guards the check above: a key that exists only inside a ternary must be found
+    const prefixes = new Set(Object.keys(DICT.en).map((k) => k.split('.')[0]));
+    const src = "push(inherited ? 'op.exactZeroLost' : 'op.noSuchCode', {}); const code = x ? 'fn.sqrt' : 'fn.nope';";
+    const found = [...src.matchAll(/'([a-zA-Z]+)\.([\w.]*\w)'/g)].filter((m) => prefixes.has(m[1])).map((m) => `${m[1]}.${m[2]}`);
+    expect(found).toEqual(['op.exactZeroLost', 'op.noSuchCode', 'fn.sqrt', 'fn.nope']);
+    expect(found.filter((k) => !(k in DICT.en))).toEqual(['op.noSuchCode', 'fn.nope']);
   });
 });
 

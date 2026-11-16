@@ -127,7 +127,7 @@ export const EXAMPLE_REFS = {
     { id: 'muller2018', role: 'version', note: n('the starting values u₀ = 2, u₁ = −4', 'počáteční hodnoty u₀ = 2, u₁ = −4') },
     { id: 'rump2020', role: 'analysis' },
   ],
-  harmonic: [{ id: 'higham2002', role: 'background', note: n('chapter 4, summation', 'kapitola 4, sčítání') }],
+  order: [{ id: 'higham2002', role: 'background', note: n('chapter 4, summation: the effect of the order of the terms', 'kapitola 4, sčítání: vliv pořadí členů') }],
   fma: [
     { id: 'montoye1990', role: 'origin', note: n('the first fused multiply-add in hardware', 'první fúzované násobení a sčítání v hardwaru') },
     { id: 'ogita2005', role: 'analysis', note: n('TwoProduct: the exact error of a product computed with fma', 'TwoProduct: přesná chyba součinu spočtená pomocí fma') },

@@ -1,15 +1,29 @@
 // Bit-level view of one step: the operands as stored, the significands aligned
-// as the hardware aligns them, the exact result with the kept bits, the guard
-// bit and the sticky bits marked, the rounded result, and the formal notation
+// to a common exponent, the exact result with the kept bits, the guard bit and
+// the sticky bits marked, the rounded result, and the formal notation
 // x̂ = RN_p(a ∘ b) = (a ∘ b)(1 + δ).
+//
+// The view is conceptual, not a datapath: it aligns and adds at full width (up
+// to MAX_ALIGNED columns) and names only two bits, the first discarded bit
+// ("guard") and the OR of all later ones ("sticky"). Of the discarded part,
+// those two decide every rounding exactly (ties to even also read the last kept
+// bit, the directed modes the sign). A hardware adder keeps p + 3 bits (guard,
+// round, sticky in the textbook G/R/S model); the extra bit only covers a
+// one-place left shift of a difference, after which the bit beyond p is our
+// guard bit again, so the decision is the same. The texts bin.alignedHw and
+// bin.grs say this to the student; the adder argument is shown only for + and −
+// (other operations get the short bin.grsShort).
 
-import { encode, fpToFraction, shortestDecimal, exponentOf, binarySci } from '../engine/ieee.js';
+import { encode, fpToFraction, shortestDecimal, binarySci, FORMATS } from '../engine/ieee.js';
+import { COMPARISONS } from '../engine/parser.js';
 import { floorLog2, fmtFrac, dyadic, Fraction } from '../engine/rational.js';
 import { escapeHtml } from './chart.js';
 import { t } from '../i18n.js';
 
 const MAX_ALIGNED = 200; // columns of the aligned view
 const EXTRA_BITS = 16; // discarded bits shown after the kept ones
+/** The aligned view adds up to this many empty columns so that the binary point (between 2⁰ and 2⁻¹) is drawn. */
+const POINT_REACH = 8;
 
 const SUB = { 0: '₀', 1: '₁', 2: '₂', 3: '₃', 4: '₄', 5: '₅', 6: '₆', 7: '₇', 8: '₈', 9: '₉' };
 const sub = (n) => String(n).split('').map((c) => SUB[c] ?? c).join('');
@@ -17,7 +31,9 @@ const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶',
 const sup = (n) => String(n).split('').map((c) => SUP[c] ?? c).join('');
 
 const ROUND_NAME = { RNE: 'RN', RNA: 'RNA', RZ: 'RZ', RU: 'RU', RD: 'RD' };
-const OP_TEXT = { '+': '+', '-': '−', '*': '·', '/': '/' };
+const CMP_OPS = new Set(COMPARISONS);
+const FORMAT_P = Object.fromEntries(FORMATS.map((f) => [f.id, f.p]));
+const OP_TEXT = { '+': '+', '-': '−', '*': '·', '/': '/', '==': '=', '!=': '≠', '<': '<', '<=': '≤', '>': '>', '>=': '≥' };
 
 /** Compact coloured bit fields of a stored value (no legend). */
 export function bitFields(v, fmt) {
@@ -51,7 +67,9 @@ function splitBits(r, fmt) {
   let disc = s.slice(fmt.p);
   if (!more) disc = disc.replace(/0+$/, '');
   if (kept.length > 300) kept = kept.slice(0, 300) + '…';
-  return { E: Eeff, kept, disc, more, neg: r.s < 0n };
+  // Exponent of the first 1 bit beyond the shown ones (the rest is scaled.n mod scaled.d, in units of 2^low).
+  const nextOne = more ? low + floorLog2(new Fraction(scaled.n % scaled.d, scaled.d)) : null;
+  return { E: Eeff, kept, disc, more, nextOne, neg: r.s < 0n };
 }
 
 function sciRow(label, bits, cls = '') {
@@ -66,7 +84,13 @@ function exactSciHtml(r, fmt) {
   const b = splitBits(r, fmt);
   const guard = b.disc[0] ?? '';
   const sticky = b.disc.slice(1);
-  const tail = b.more ? '<span class="bin-more" title="' + escapeHtml(t('bin.more')) + '">…</span>' : `<span class="muted small"> ${escapeHtml(t('bin.ends'))}</span>`;
+  let tail;
+  if (!b.more) tail = `<span class="muted small"> ${escapeHtml(t('bin.ends'))}</span>`;
+  else if (!sticky.includes('1')) {
+    // The shown sticky bits are all 0, yet sticky = 1: show where the hidden 1 is.
+    const pos = `2${sup(b.nextOne)}`;
+    tail = `<span class="bin-sticky bin-more" title="${escapeHtml(t('bin.stickyHidden', { pos }))}">…1</span><span class="muted small"> ${escapeHtml(t('bin.firstOne', { pos }))}</span>`;
+  } else tail = '<span class="bin-more" title="' + escapeHtml(t('bin.more')) + '">…</span>';
   return `${b.neg ? '−' : '+'}${keptHtml(b.kept)}<span class="bin-guard" title="${escapeHtml(t('bin.guard'))}">${guard}</span><span class="bin-sticky" title="${escapeHtml(t('bin.sticky'))}">${sticky}</span>${tail} ×2${sup(b.E)}`;
 }
 
@@ -84,8 +108,14 @@ function alignedHtml(rows, cutQ) {
   // rows: {label, m (BigInt, ≥ 0), q, neg, cls, cut?}
   const nonzero = rows.filter((r) => r.m !== 0n);
   if (!nonzero.length) return '';
-  const hi = Math.max(...nonzero.map((r) => r.q + r.m.toString(2).length - 1));
-  const lo = Math.min(...nonzero.map((r) => r.q), cutQ);
+  let hi = Math.max(...nonzero.map((r) => r.q + r.m.toString(2).length - 1));
+  let lo = Math.min(...nonzero.map((r) => r.q), cutQ);
+  // The binary point sits between columns 2⁰ and 2⁻¹. Values below 1 (0.1 + 0.2)
+  // or whole numbers would otherwise show no point at all; a few empty columns
+  // bring it into view. Far away (1e-30) the note says where it is instead.
+  if (hi < 0 && -hi <= POINT_REACH) hi = 0;
+  if (lo > -1 && lo + 1 <= POINT_REACH) lo = -1;
+  const hasPoint = hi >= 0 && lo <= -1;
   const width = hi - lo + 1;
   if (width > MAX_ALIGNED) return `<p class="muted small">${escapeHtml(t('bin.tooWide', { n: width }))}</p>`;
   const header = `<tr class="bin-head"><th></th><td class="mono">${Array.from({ length: width }, (_, i) => {
@@ -107,7 +137,8 @@ function alignedHtml(rows, cutQ) {
     return `<tr class="${r.cls || ''}"><th>${r.label}</th><td class="mono">${r.neg ? '−' : '+'}${cells.join('')}</td></tr>`;
   }).join('');
   return `<div class="bin-scroll"><table class="bin-table">${header}${body}</table></div>
-    <p class="muted small">${escapeHtml(t('bin.alignedNote', { hi, lo }))}</p>`;
+    <p class="muted small">${escapeHtml(t(hasPoint ? 'bin.alignedNote' : 'bin.alignedNoteFar', { hi, lo }))}</p>
+    <p class="muted small bin-hw">${escapeHtml(t('bin.alignedHw'))}</p>`;
 }
 
 function dyadicOf(r) {
@@ -126,6 +157,8 @@ function nameOf(s) {
 function formalHtml(step, steps, fmt, res, mode) {
   const R = res.round;
   const rn = `${ROUND_NAME[mode]}${sub(fmt.p)}`;
+  // Round to nearest: error ≤ u (half a spacing); directed rounding: < 2u (a whole spacing).
+  const nearest = mode === 'RNE' || mode === 'RNA';
   const names = step.operands.map((id) => nameOf(steps[id]));
   let expr;
   if (step.kind !== 'op') expr = escapeHtml(step.source ?? step.text);
@@ -137,10 +170,19 @@ function formalHtml(step, steps, fmt, res, mode) {
   const lhs = step.lastAssigned && step.lastAssigned.length <= 8 ? `${step.lastAssigned}̂` : 'x̂';
   const lines = [];
   if (!R) {
-    lines.push(`<div class="fx-line mono">${lhs} = ${expr}</div><div class="muted small">${escapeHtml(t(step.op === 'neg' || step.op === 'abs' ? 'fx.signExact' : 'fx.special'))}</div>`);
+    const why = step.op === 'neg' || step.op === 'abs' ? 'fx.signExact' : CMP_OPS.has(step.op) ? 'fx.compare' : 'fx.special';
+    lines.push(`<div class="fx-line mono">${lhs} = ${expr}</div><div class="muted small">${escapeHtml(t(why))}</div>`);
+  } else if (res.cast) {
+    // A cast rounds twice: into the target format, then back into this column's format.
+    const pT = FORMAT_P[res.cast.target];
+    lines.push(`<div class="fx-line mono">${lhs} = ${ROUND_NAME[mode]}${sub(fmt.p)}(${ROUND_NAME[mode]}${sub(pT)}(${escapeHtml(names[0])}))</div><div class="muted small">${escapeHtml(t('fx.cast', { pT, p: fmt.p }))}</div>`);
+    if (res.exactOp.kind === 'finite' && res.exactOp.r.n !== 0n && res.value.kind === 'finite') {
+      const delta = fpToFraction(res.value).sub(res.exactOp.r).div(res.exactOp.r);
+      lines.push(`<div class="fx-line mono">${lhs} = ${escapeHtml(names[0])}·(1 + δ),  δ = ${escapeHtml(fmtFrac(delta, 3, { plainMin: -3, plainMax: 5 }))}</div>`);
+    }
   } else {
-    lines.push(`<div class="fx-line mono">${lhs} = ${rn}(${expr})</div><div class="muted small">${escapeHtml(t('fx.def'))}</div>`);
-    const u = mode === 'RNE' || mode === 'RNA' ? `u = 2${sup(-fmt.p)}` : `2u = 2${sup(1 - fmt.p)}`;
+    lines.push(`<div class="fx-line mono">${lhs} = ${rn}(${expr})</div><div class="muted small">${escapeHtml(t('fx.def', { rn: ROUND_NAME[mode], mode: t('mode.' + mode) }))}</div>`);
+    const u = nearest ? `u = 2${sup(-fmt.p)}` : `2u = 2${sup(1 - fmt.p)}`;
     if (R.overflow) {
       lines.push(`<div class="fx-line mono">|${expr}| > Ω  ⇒  ${lhs} = ${escapeHtml(shortestDecimal(res.value, fmt))}</div><div class="muted small">${escapeHtml(t('fx.overflow'))}</div>`);
     } else if (res.exactOp.kind === 'finite' && (res.value.kind === 'finite' || res.value.kind === 'zero')) {
@@ -150,23 +192,44 @@ function formalHtml(step, steps, fmt, res, mode) {
         lines.push(`<div class="fx-line mono">${lhs} = ${expr},  δ = 0</div><div class="muted small">${escapeHtml(t('fx.exact'))}</div>`);
       } else if (R.tiny) {
         const eta = fmtFrac(err, 3, { plainMin: -3, plainMax: 5 });
-        const bound = `2${sup(fmt.emin - fmt.p)}`;
-        lines.push(`<div class="fx-line mono">${lhs} = (${expr}) + η,  η = ${escapeHtml(eta)},  |η| ≤ ${bound}</div><div class="muted small">${escapeHtml(t('fx.subnormal'))}</div>`);
+        // Half the subnormal spacing 2^(emin−p+1) for rounding to nearest, less than a whole spacing for directed rounding.
+        const bound = nearest ? `≤ 2${sup(fmt.emin - fmt.p)}` : `< 2${sup(fmt.emin - fmt.p + 1)}`;
+        lines.push(`<div class="fx-line mono">${lhs} = (${expr}) + η,  η = ${escapeHtml(eta)},  |η| ${bound}</div><div class="muted small">${escapeHtml(t(nearest ? 'fx.subnormal' : 'fx.subnormalDirected'))}</div>`);
       } else {
         const delta = err.div(x);
         const d = fmtFrac(delta, 3, { plainMin: -3, plainMax: 5 });
-        lines.push(`<div class="fx-line mono">${lhs} = (${expr})·(1 + δ),  δ = ${escapeHtml(d)},  |δ| ≤ ${u} ≈ ${escapeHtml(fmtFrac(dyadic(1n, mode === 'RNE' || mode === 'RNA' ? -fmt.p : 1 - fmt.p), 2))}</div><div class="muted small">${escapeHtml(t('fx.model'))}</div>`);
+        lines.push(`<div class="fx-line mono">${lhs} = (${expr})·(1 + δ),  δ = ${escapeHtml(d)},  |δ| ≤ ${u} ≈ ${escapeHtml(fmtFrac(dyadic(1n, nearest ? -fmt.p : 1 - fmt.p), 2))}</div><div class="muted small">${escapeHtml(t('fx.model'))}</div>`);
       }
     }
   }
+  const how = t(nearest ? 'fx.how.nearest' : 'fx.how.directed');
   return `<div class="fx">${lines.join('')}</div>
-    <details class="fx-more"><summary>${escapeHtml(t('fx.about'))}</summary><p class="small">${escapeHtml(t('fx.legend', { rn: ROUND_NAME[mode], p: fmt.p, mode: t('mode.' + mode) }))}</p><p class="small">${escapeHtml(t('fx.integer'))}</p></details>`;
+    <details class="fx-more"><summary>${escapeHtml(t('fx.about'))}</summary><p class="small">${escapeHtml(t('fx.legend', { rn: ROUND_NAME[mode], p: fmt.p, mode: t('mode.' + mode), how }))}</p><p class="small">${escapeHtml(t('fx.integer'))}</p></details>`;
 }
 
-/** The whole "bit by bit" section of the detail panel. */
+/**
+ * The rule that turns (guard, sticky) into a direction, for the mode in use:
+ * guard 0 = less than half a unit in the last place, guard 1 + sticky 1 = more
+ * than half, guard 1 + sticky 0 = exactly half (a tie, decided by the last kept
+ * bit under ties-to-even). Directed modes ignore "half" altogether.
+ * @param {string|null} lastKept the last kept bit of the exact result ('0' / '1'), if known
+ */
+function decisionRule(R, mode, lastKept) {
+  if (mode !== 'RNE' && mode !== 'RNA') return t('bin.rule.directed');
+  if (R.guard === 0) return t('bin.rule.below');
+  if (R.sticky) return t('bin.rule.above');
+  if (mode === 'RNA') return t('bin.rule.tieAway');
+  if (lastKept !== '0' && lastKept !== '1') return t('bin.rule.tieEvenAny');
+  return t('bin.rule.tieEven', { last: lastKept, action: t(lastKept === '1' ? 'bin.tie.carry' : 'bin.tie.keep') });
+}
+
+/**
+ * The whole "bit by bit" section of the detail panel: the concrete bits first
+ * (operands, aligned significands, scientific form, the rounding decision), the
+ * formal notation last, for readers who know binary but not numerical analysis.
+ */
 export function binaryOperationHtml(step, steps, fmt, res, mode) {
   const parts = [];
-  parts.push(`<h4>${escapeHtml(t('fx.title'))}</h4>${formalHtml(step, steps, fmt, res, mode)}`);
 
   // Operands as stored
   if (step.kind === 'op') {
@@ -212,14 +275,22 @@ export function binaryOperationHtml(step, steps, fmt, res, mode) {
   } else if (exactR) {
     sci.push(sciRow(escapeHtml(t('bin.literal')), exactR.n === 0n ? '0' : exactSciHtml(exactR, fmt), 'bin-exact'));
   }
-  if (step.kind === 'op' && exactR && exactR.n !== 0n) sci.push(sciRow('= ' + escapeHtml(t('bin.exact')), exactSciHtml(exactR, fmt), 'bin-exact'));
+  // A cast rounds the operand into its target format: mark the bits that format keeps.
+  const cutFmt = res.cast ? FORMATS.find((f) => f.id === res.cast.target) : fmt;
+  if (step.kind === 'op' && exactR && exactR.n !== 0n) sci.push(sciRow('= ' + escapeHtml(t('bin.exact')), exactSciHtml(exactR, cutFmt), 'bin-exact'));
   sci.push(sciRow('→ ' + escapeHtml(t('bin.result')), storedSciHtml(v, fmt), 'bin-result'));
   parts.push(`<h4>${escapeHtml(t('bin.scientific'))}</h4><div class="bin-scroll"><table class="bin-table">${sci.join('')}</table></div>
-    <div class="bin-legend small"><span><i class="bin-kept"></i>${escapeHtml(t('bin.keptLegend', { p: fmt.p }))}</span><span><i class="bin-guard"></i>${escapeHtml(t('bin.guard'))}</span><span><i class="bin-sticky"></i>${escapeHtml(t('bin.sticky'))}</span></div>`);
+    <div class="bin-legend small"><span><i class="bin-kept"></i>${escapeHtml(t('bin.keptLegend', { p: cutFmt.p }))}</span><span><i class="bin-guard"></i>${escapeHtml(t('bin.guard'))}</span><span><i class="bin-sticky"></i>${escapeHtml(t('bin.sticky'))}</span></div>`);
   if (R && R.inexact && !R.overflow) {
-    parts.push(`<p class="small">${escapeHtml(t('bin.decision', { g: R.guard, s: R.sticky ? 1 : 0, dir: t('dir.' + R.direction), mode: t('mode.' + mode) }))}</p>`);
+    let lastKept = null;
+    if (exactR && exactR.n !== 0n) {
+      const kept = splitBits(exactR, cutFmt).kept;
+      if (!kept.endsWith('…')) lastKept = kept[kept.length - 1];
+    }
+    const rule = decisionRule(R, mode, lastKept);
+    parts.push(`<p class="small bin-decision">${escapeHtml(t('bin.decision', { g: R.guard, s: R.sticky ? 1 : 0, dir: t('dir.' + R.direction), mode: t('mode.' + mode), rule }))}</p>`);
+    parts.push(`<p class="muted small bin-grs">${escapeHtml(t(step.op === '+' || step.op === '-' ? 'bin.grs' : 'bin.grsShort'))}</p>`);
   }
+  parts.push(`<h4>${escapeHtml(t('fx.title'))}</h4>${formalHtml(step, steps, fmt, res, mode)}`);
   return parts.join('');
 }
-
-export { Fraction, exponentOf };

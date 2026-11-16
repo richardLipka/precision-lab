@@ -4,27 +4,25 @@
 
 import { evaluate } from '../engine/evaluator.js';
 import { shortestDecimal } from '../engine/ieee.js';
-import { compareToExact } from '../engine/metrics.js';
+import { compareToExact, correctDigits, qualityOf } from '../engine/metrics.js';
 import {
   statementsOf, walk, getAt, print, applicableRules, applyRule, replaceExpression, sameMeaning,
 } from '../engine/ast.js';
 import { escapeHtml } from './chart.js';
-import { fmtName, trueText } from './detail.js';
+import { fmtName, trueText, digitsText, QUALITY_ICON, badgeLegendHtml } from './detail.js';
 import { t, errorText } from '../i18n.js';
 
-const OP_LABEL = { '+': '+', '-': '−', '*': '×', '/': '÷' };
+const OP_LABEL = { '+': '+', '-': '−', '*': '×', '/': '÷', '==': '==', '!=': '≠', '<': '<', '<=': '≤', '>': '>', '>=': '≥' };
 
-function digitsOf(cmp) {
-  if (cmp.status === 'exact' || cmp.status === 'both-inf' || cmp.status === 'both-nan') return Infinity;
-  if (cmp.status === 'approx') return cmp.rel ? cmp.digits : 0;
-  return 0;
-}
+/** Correct digits as every view shows them (capped at the format's capacity; see metrics.js). */
+const digitsOf = (v, x, fmt) => correctDigits(compareToExact(v, x, fmt), fmt);
 
-function badge(d, fmt) {
-  if (d === Infinity) return `<span class="badge q-exact">${t('badge.exact')}</span>`;
-  const full = fmt.p * Math.log10(2);
-  const q = d / full >= 0.85 ? 'q-good' : d / full >= 0.4 ? 'q-mid' : 'q-bad';
-  return `<span class="badge ${q}">${t('badge.digits', { d: d.toFixed(1) })}</span>`;
+function badge(dg) {
+  if (dg.shown === Infinity) return `<span class="badge q-exact">${t('badge.exact')}</span>`;
+  if (dg.shown == null) return `<span class="badge q-bad" title="${escapeHtml(t('badge.mismatchTitle'))}">${t('badge.mismatch')}</span>`;
+  const title = dg.capped ? ` title="${escapeHtml(digitsText(dg))}"` : '';
+  const q = qualityOf(dg.shown, dg.full);
+  return `<span class="badge ${q}"${title}>${QUALITY_ICON[q] || ''}${t('badge.digits', { d: dg.shown.toFixed(1) })}</span>`;
 }
 
 function nodeLabel(n) {
@@ -64,7 +62,7 @@ export function createRewritePanel(host, api) {
       <div class="panel"><div class="section-title"><h2 data-r="tree"></h2></div><div id="rw-tree" class="ast-tree" role="tree"></div></div>
       <div class="panel"><div class="section-title"><h2 data-r="rules"></h2></div><div id="rw-node"></div><div id="rw-rules" class="rw-rules"></div></div>
     </div>
-    <div class="panel"><div class="section-title"><h2 data-r="compare"></h2></div><div class="table-scroll"><table class="steps rw-compare" id="rw-compare"></table></div></div>
+    <div class="panel"><div class="section-title"><h2 data-r="compare"></h2></div><div class="table-scroll"><table class="steps rw-compare" id="rw-compare"></table></div><div id="rw-legend"></div></div>
     <div class="panel"><div class="section-title"><h2 data-r="history"></h2></div><ol id="rw-history" class="rw-history"></ol>
       <div class="rw-programs"><div><h3 data-r="original"></h3><pre id="rw-before" class="mono"></pre></div><div><h3 data-r="rearranged"></h3><pre id="rw-after" class="mono"></pre></div></div></div>`;
 
@@ -177,7 +175,7 @@ export function createRewritePanel(host, api) {
       let val = '';
       if (step && fmt) {
         const v = step.fmt[fmt.id].value;
-        val = `<span class="ast-val mono">${escapeHtml(shortestDecimal(v, fmt))}</span>${badge(digitsOf(compareToExact(v, step.exact, fmt)), fmt)}`;
+        val = `<span class="ast-val mono">${escapeHtml(shortestDecimal(v, fmt))}</span>${badge(digitsOf(v, step.exact, fmt))}`;
       }
       const selected = path.join('.') === s.path.join('.');
       const text = print(node);
@@ -265,21 +263,25 @@ export function createRewritePanel(host, api) {
       const rows = formats.map((f, i) => {
         const va = g.a.fmt[f.id].value;
         const vb = g.b.fmt[f.id].value;
-        const da = digitsOf(compareToExact(va, g.a.exact, f));
-        const db = digitsOf(compareToExact(vb, g.b.exact, f));
+        const ga = digitsOf(va, g.a.exact, f);
+        const gb = digitsOf(vb, g.b.exact, f);
+        // compare the shown figures (not comparable = 0 digits), as everywhere else
+        const da = ga.shown ?? 0;
+        const db = gb.shown ?? 0;
         let change;
         if (da === db || (Math.abs(da - db) < 0.05)) change = `<span class="muted">${t('rw.same')}</span>`;
         else if (db > da) change = `<span class="good">▲ ${escapeHtml(t('rw.better', { d: db === Infinity ? '∞' : (db - da).toFixed(1) }))}</span>`;
         else change = `<span class="bad">▼ ${escapeHtml(t('rw.worse', { d: da === Infinity ? '∞' : (da - db).toFixed(1) }))}</span>`;
         return `<tr>${i === 0 ? `<td rowspan="${formats.length}" class="rw-var"><b class="mono">${escapeHtml(g.label)}</b><div class="muted small">${escapeHtml(t('rw.trueValue'))}: <span class="mono">${escapeHtml(trueText(g.b.exact, 18))}</span></div></td>` : ''}
           <td>${escapeHtml(fmtName(f))}</td>
-          <td><span class="mono">${escapeHtml(shortestDecimal(va, f))}</span> ${badge(da, f)}</td>
-          <td><span class="mono">${escapeHtml(shortestDecimal(vb, f))}</span> ${badge(db, f)}</td>
+          <td><span class="mono">${escapeHtml(shortestDecimal(va, f))}</span> ${badge(ga)}</td>
+          <td><span class="mono">${escapeHtml(shortestDecimal(vb, f))}</span> ${badge(gb)}</td>
           <td>${change}</td></tr>`;
       }).join('');
       return rows;
     }).join('');
     $('rw-compare').innerHTML = formats.length ? head + `<tbody>${body}</tbody>` : `<tbody><tr><td class="muted">${t('rw.noFormats')}</td></tr></tbody>`;
+    $('rw-legend').innerHTML = formats.length ? badgeLegendHtml() : '';
   }
 
   function renderHistory() {
