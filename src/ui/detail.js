@@ -12,6 +12,7 @@ import { approxText } from '../engine/real.js';
 import { OP_SYMBOL } from '../engine/evaluator.js';
 import { escapeHtml } from './chart.js';
 import { t } from '../i18n.js';
+import { binaryOperationHtml } from './binaryView.js';
 
 export function fmtErr(r, digits = 4) {
   if (!r) return '—';
@@ -167,7 +168,7 @@ export function renderDetail(host, ctx) {
   }
   const step = result.steps[sel.step];
   const steps = result.steps;
-  const head = `<div class="detail-head"><span class="pill">#${step.id}</span><span class="mono">${escapeHtml(step.text)}</span>${step.iter ? `<span class="muted small">${t('det.iteration', { i: step.iter.join('.') })}</span>` : ''}${step.lastAssigned ? `<span class="muted small">→ ${escapeHtml(step.lastAssigned)}</span>` : ''}</div>`;
+  const head = `<div class="detail-head"><button class="btn small fit-bits" type="button" title="${escapeHtml(t('det.fitTitle'))}">⇔ ${escapeHtml(t('det.fit'))}</button><span class="pill">#${step.id}</span><span class="mono">${escapeHtml(step.text)}</span>${step.iter ? `<span class="muted small">${t('det.iteration', { i: step.iter.join('.') })}</span>` : ''}${step.lastAssigned ? `<span class="muted small">→ ${escapeHtml(step.lastAssigned)}</span>` : ''}</div>`;
   const tabs = `<div class="detail-tabs" role="tablist">${['exact', ...result.formats.map((f) => f.id)].map((id) => `<button role="tab" class="tab ${sel.fmt === id ? 'active' : ''}" data-fmt="${id}" aria-selected="${sel.fmt === id}">${id === 'exact' ? t('steps.exact') : escapeHtml(formatsById[id].short)}</button>`).join('')}</div>`;
 
   if (sel.fmt === 'exact' || !formatsById[sel.fmt]) {
@@ -213,6 +214,7 @@ export function renderDetail(host, ctx) {
   host.innerHTML = `${head}${tabs}
     <section class="what"><h3>${t('det.what')} ${causeChip(ex.cause)}</h3>${explanationHtml(ex.items)}</section>
     <section><h3>${escapeHtml(t('det.opIn', { fmt: fmtName(fmt) }))}</h3><p>${opDescription(step, steps, fmt.id, fmt)}</p></section>
+    <section class="binary"><h3>${escapeHtml(t('bin.title'))}</h3>${binaryOperationHtml(step, steps, fmt, res, result.mode)}</section>
     ${roundingSection}
     <section><h3>${t('det.stored')}</h3>
       <div class="kv"><span>${t('det.shortest')}</span><span class="mono strong long">${escapeHtml(shortestDecimal(v, fmt))}</span></div>
@@ -245,4 +247,5 @@ function bindLinks(host, ctx) {
     ctx.select(Number(a.dataset.step), ctx.sel.fmt);
   }));
   host.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => ctx.select(ctx.sel.step, b.dataset.fmt)));
+  host.querySelector('.fit-bits')?.addEventListener('click', () => ctx.fitWidth?.());
 }

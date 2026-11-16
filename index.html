@@ -87,7 +87,14 @@
         <div id="summary" class="summary"></div>
         <div id="diagnosis" class="panel diagnosis"></div>
         <div class="panel">
-          <div class="section-title"><h2 data-i18n="chart.title"></h2><span class="muted small" data-i18n="chart.subtitle"></span></div>
+          <div class="section-title"><h2 data-i18n="chart.title"></h2>
+            <label class="inline small"><span data-i18n="chart.measure"></span>
+              <select id="chart-measure">
+                <option value="digits" data-i18n="chart.m.digits"></option>
+                <option value="abs" data-i18n="chart.m.abs"></option>
+                <option value="rel" data-i18n="chart.m.rel"></option>
+              </select></label></div>
+          <p class="muted small chart-sub" id="chart-subtitle"></p>
           <div id="chart"></div>
         </div>
         <div class="panel">
@@ -101,7 +108,10 @@
       <div id="view-rewrite" class="view" hidden></div>
     </section>
 
-    <aside class="panel detail" id="detail" aria-label="Step detail"></aside>
+    <aside class="panel detail" id="detail-panel" aria-label="Step detail">
+      <div class="detail-resizer" id="detail-resizer" role="separator" aria-orientation="vertical" tabindex="0" data-i18n-title="det.resize" data-i18n-aria="det.resize"></div>
+      <div id="detail"></div>
+    </aside>
   </main>
   <footer class="app-footer">
     <p class="muted small" data-i18n-html="footer"></p>

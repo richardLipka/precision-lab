@@ -32,8 +32,14 @@ operaci po operaci, a ukáže, kde a proč se výsledky rozcházejí.
   * uložená hodnota jako přesné desetinné číslo i jako bitový zápis (znaménko / exponent /
     zlomková část, hex)
   * chyba rozdělená na část zděděnou z operandů a nové zaokrouhlení
+  * **bit po bitu:** bitová pole operandů; u + a − mantisy zarovnané na společný exponent; přesný výsledek
+    s vyznačenými p zachovanými bity, ochranným bitem a sticky bity
+  * **formální zápis:** x̂ = RN₅₃(a + b) = (a + b)(1 + δ) se skutečným δ a jeho mezí u = 2⁻ᵖ (u subnormálních
+    čísel absolutní chyba η); srovnání s n-bitovými celými čísly, kde a ⊕ b = (a + b) mod 2ⁿ
+  * panel lze rozšířit tažením levého okraje (nebo tlačítkem „vejít bity“), aby se 64bitový zápis vešel na řádek
 * **Diagnóza:** pro každý formát kroky, které stály nejvíc platných číslic.
-* **Graf šíření chyby:** počet platných číslic po každém kroku, jedna čára pro každý formát.
+* **Graf šíření chyby:** po každém kroku, jedna čára pro každý formát: platné číslice, |vypočtená − skutečná|
+  nebo relativní chyba (logaritmické měřítko).
 
 ### Průchod přesnostmi
 Spustí program pro každou přesnost p ze seznamu nebo rozsahu (např. `1-1000`, `11, 24, 53, 64, 113`).
@@ -67,8 +73,8 @@ Vstupy jsou přesné: `0.1`, `-2.5e-3`, `1/3`, `0x1.8p-2`, `inf`. Vyhodnocuje se
 doprava, jak je napsáno: `a + b + c` znamená `(a + b) + c`.
 
 ### Příklady
-22 vestavěných příkladů. Klasické případy, které selžou uprostřed výpočtu:
-* Rumpův polynom, zapsaný dvěma způsoby
+21 vestavěných příkladů. Klasické případy, které selžou uprostřed výpočtu:
+* Rumpův polynom
 * Mullerova rekurence
 * nestabilní rekurence Iₙ = 1/n − 5·Iₙ₋₁
 * Taylorova řada e⁻²⁰
@@ -91,7 +97,7 @@ myšlenka) objevil poprvé; ostatní zdroje jev vysvětlují. Všechny DOI byly 
 | Sčítání není asociativní | Goldberg 1991 [1] (tentýž příklad s ±10³⁰) |
 | Desetkrát přičíst 0.1, harmonický součet | Higham 2002 [2], kapitola 4 |
 | Jednoprůchodový rozptyl | Welford 1962 [3] (stabilní alternativa), Chan, Golub a LeVeque 1983 [4] |
-| Rumpův příklad (obě podoby) | Rump 1988 [5], rozbor Loh a Walster 2002 [6] |
+| Rumpův příklad | Rump 1988 [5], rozbor Loh a Walster 2002 [6] |
 | Mullerova rekurence | Muller 1989 [7] (tam u₀ = 11/2, u₁ = 61/11), tato podoba Muller a kol. 2018 [8], rozbor Rump 2020 [9] |
 | Fúzované násobení a sčítání | Montoye, Hokenek a Runyon 1990 [10], Ogita, Rump a Oishi 2005 [11] |
 | Přetečení a podtečení | IEEE 754-2019 [12] |
@@ -122,7 +128,7 @@ myšlenka) objevil poprvé; ostatní zdroje jev vysvětlují. Všechny DOI byly 
 
 ## Ověření
 
-`npm test` (143 testů včetně kouřového testu stránky v happy-dom) porovnává simulátor s nezávislými implementacemi:
+`npm test` (144 testů včetně kouřového testu stránky v happy-dom) porovnává simulátor s nezávislými implementacemi:
 * binary64 s nativními doubly JavaScriptu: + − × ÷, speciální hodnoty, převod desetinných čísel a
   nejkratší zpětně převoditelný výpis
 * binary32 s `Math.fround`, binary16 s `Math.f16round`

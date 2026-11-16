@@ -31,8 +31,14 @@ operation by operation, and shows where and why the results drift apart.
   * guard and sticky bits
   * the stored value as an exact decimal and as a bit pattern (sign / exponent / fraction, hex)
   * the error split into the part inherited from the operands and the new rounding error
+  * **bit by bit:** the operands' bit fields; for + and − the significands aligned to a common exponent;
+    the exact result with the kept p bits, the guard bit and the sticky bits marked
+  * **formal notation:** x̂ = RN₅₃(a + b) = (a + b)(1 + δ) with the actual δ and its bound u = 2⁻ᵖ (or the
+    absolute error η for subnormals); compare n-bit integers, where a ⊕ b = (a + b) mod 2ⁿ
+  * the panel can be widened by dragging its left edge (or "fit bits"), so a 64-bit pattern fits on one line
 * **Diagnosis:** for each format, the steps that cost the most correct digits.
-* **Error-propagation chart:** correct digits after each step, one line per format.
+* **Error-propagation chart:** after each step, one line per format: correct digits, |computed − true|
+  or the relative error (log scale).
 
 ### Precision sweep
 Runs the program with every precision p from a list or range (e.g. `1-1000`, `11, 24, 53, 64, 113`).
@@ -66,8 +72,8 @@ Inputs are exact: `0.1`, `-2.5e-3`, `1/3`, `0x1.8p-2`, `inf`. Evaluation is stri
 as written, so `a + b + c` means `(a + b) + c`.
 
 ### Examples
-22 built-in examples. Classic ones that fail partway through the calculation:
-* Rump's polynomial, written in two ways
+21 built-in examples. Classic ones that fail partway through the calculation:
+* Rump's polynomial
 * Muller's recurrence
 * the unstable recurrence Iₙ = 1/n − 5·Iₙ₋₁
 * the Taylor series of e⁻²⁰
@@ -90,7 +96,7 @@ idea) appeared first; the others explain the effect. All DOIs were checked again
 | Addition is not associative | Goldberg 1991 [1] (the same example with ±10³⁰) |
 | Adding 0.1 ten times, harmonic sum | Higham 2002 [2], chapter 4 |
 | One-pass variance | Welford 1962 [3] (stable alternative), Chan, Golub & LeVeque 1983 [4] |
-| Rump's example (both versions) | Rump 1988 [5], analysis Loh & Walster 2002 [6] |
+| Rump's example | Rump 1988 [5], analysis Loh & Walster 2002 [6] |
 | Muller's recurrence | Muller 1989 [7] (there u₀ = 11/2, u₁ = 61/11), this version Muller et al. 2018 [8], analysis Rump 2020 [9] |
 | Fused multiply-add | Montoye, Hokenek & Runyon 1990 [10], Ogita, Rump & Oishi 2005 [11] |
 | Overflow and underflow | IEEE 754-2019 [12] |
@@ -138,7 +144,7 @@ idea) appeared first; the others explain the effect. All DOIs were checked again
 
 ## Verification
 
-`npm test` (143 tests, including a page smoke test in happy-dom) checks the simulator against independent implementations:
+`npm test` (144 tests, including a page smoke test in happy-dom) checks the simulator against independent implementations:
 * binary64 against native JavaScript doubles: + − × ÷, special values, decimal conversion and the
   shortest round-trip output
 * binary32 against `Math.fround`, binary16 against `Math.f16round`

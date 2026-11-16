@@ -177,7 +177,7 @@ describe('examples', () => {
   }
 
   it('the new examples really fail in double', () => {
-    const fail = ['rumpSteps', 'recurrence', 'taylor', 'compound', 'golden', 'logistic'];
+    const fail = ['rump', 'recurrence', 'taylor', 'compound', 'golden', 'logistic'];
     for (const id of fail) {
       const ex = EXAMPLES.find((e) => e.id === id);
       const r = evaluate({ program: ex.program, variables: ex.variables, formats: [F.binary64], mode: 'RNE' });

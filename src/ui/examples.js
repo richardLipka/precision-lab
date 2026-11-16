@@ -69,16 +69,6 @@ export const EXAMPLES = [
     program: 'm = (x1 + x2 + x3) / 3\nm2 = (x1^2 + x2^2 + x3^2) / 3\nvar = m2 - m^2',
   },
   {
-    id: 'rump',
-    title: { en: "Rump's example", cs: 'Rumpův příklad' },
-    blurb: {
-      en: 'S. M. Rump (1988): float, double and extended all give wrong values; the true result is −0.827396… The precision sweep shows that at least 122 bits are needed.',
-      cs: 'S. M. Rump (1988): float, double i extended dávají chybné hodnoty; skutečný výsledek je −0.827396… Průchod přesnostmi ukáže, že je potřeba aspoň 122 bitů.',
-    },
-    variables: [{ name: 'a', value: '77617' }, { name: 'b', value: '33096' }],
-    program: '333.75*b^6 + a^2*(11*a^2*b^2 - b^6 - 121*b^4 - 2) + 5.5*b^8 + a/(2*b)',
-  },
-  {
     id: 'muller',
     title: { en: "Muller's recurrence", cs: 'Mullerova rekurence' },
     blurb: {
@@ -119,11 +109,11 @@ export const EXAMPLES = [
     program: 'big = x*x*x / (x*x)\ntiny = y*y*1e30',
   },
   {
-    id: 'rumpSteps',
-    title: { en: "Rump's example — every product a step", cs: 'Rumpův příklad — každý součin krokem' },
+    id: 'rump',
+    title: { en: "Rump's example", cs: 'Rumpův příklad' },
     blurb: {
-      en: 'The same polynomial written with explicit multiplications (x = 77617, y = 33096), so every partial product is its own step. The terms grow to about 10³⁶ and then cancel almost completely: look at the step where 5.5·y⁸ is added — the cause column shows the cancellation.',
-      cs: 'Stejný polynom zapsaný explicitními násobeními (x = 77617, y = 33096), takže každý částečný součin je samostatný krok. Členy narostou asi na 10³⁶ a pak se téměř úplně odečtou: podívejte se na krok, kde se přičítá 5.5·y⁸ — sloupec příčin ukáže krácení.',
+      en: 'S. M. Rump (1988): float, double and extended all give wrong values; the true result is −0.827396… The polynomial is written with explicit multiplications (x = 77617, y = 33096), so every partial product is its own step. The terms grow to about 10³⁶ and then cancel almost completely: look at the step where 5.5·y⁸ is added. The precision sweep shows that at least 122 bits are needed.',
+      cs: 'S. M. Rump (1988): float, double i extended dávají chybné hodnoty; skutečný výsledek je −0.827396… Polynom je zapsaný explicitními násobeními (x = 77617, y = 33096), takže každý částečný součin je samostatný krok. Členy narostou asi na 10³⁶ a pak se téměř úplně odečtou: podívejte se na krok, kde se přičítá 5.5·y⁸. Průchod přesnostmi ukáže, že je potřeba aspoň 122 bitů.',
     },
     variables: [],
     program: 'x = 77617\ny = 33096\n\nz = 333.75*y*y*y*y*y*y + (x*x)*(11*x*x*y*y - y*y*y*y*y*y - 121*y*y*y*y - 2) + 5.5*y*y*y*y*y*y*y*y + x / (2*y)',

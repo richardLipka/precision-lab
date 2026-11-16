@@ -6,6 +6,7 @@ import { explainStep, diagnose } from './engine/explain.js';
 import { EXAMPLES, DEFAULT_EXAMPLE } from './ui/examples.js';
 import { BIB, EXAMPLE_REFS, refLink } from './ui/references.js';
 import { renderLineChart, escapeHtml } from './ui/chart.js';
+import { log10Abs } from './engine/rational.js';
 import { renderDetail, fmtErr, fmtName, causeChip, trueText } from './ui/detail.js';
 import { createSweepPanel } from './ui/sweep.js';
 import { createRewritePanel } from './ui/rewrite.js';
@@ -37,6 +38,7 @@ const defaultState = () => {
     custom: { on: false, p: 100, expBits: 15, unbounded: true },
     mode: 'RNE',
     showConst: true,
+    chartMeasure: 'digits',
     refDigits: 60,
     view: 'compare',
     sweep: { spec: '1-200', unbounded: true, expBits: 15, measure: 'abs', lines: 10 },
@@ -116,6 +118,7 @@ function initControls() {
   });
 
   $('mode').addEventListener('change', (e) => { state.mode = e.target.value; run(); });
+  $('chart-measure').addEventListener('change', (e) => { state.chartMeasure = e.target.value; saveState(); renderChartPanel(); });
   $('ref-digits').addEventListener('change', (e) => {
     state.refDigits = Math.min(1000, Math.max(20, parseInt(e.target.value, 10) || 60));
     e.target.value = state.refDigits;
@@ -269,6 +272,7 @@ function syncInputs() {
   $('program').value = state.program;
   $('mode').value = state.mode;
   $('show-const').checked = state.showConst;
+  $('chart-measure').value = state.chartMeasure || 'digits';
   $('ref-digits').value = state.refDigits ?? 60;
   for (const cb of $('formats').querySelectorAll('input[data-fmt]')) cb.checked = !!state.formats[cb.dataset.fmt];
   $('custom-on').checked = state.custom.on;
@@ -473,31 +477,56 @@ function renderDiagnosis() {
   }));
 }
 
+/**
+ * Error-propagation chart. Three measures of the same thing:
+ *  digits = correct significant digits, abs = |computed − true| (log scale),
+ *  rel = |computed − true| / |true| (log scale). Exact values are drawn as
+ *  markers on the bottom edge of the log charts; ∞/NaN results leave a gap.
+ */
 function renderChartPanel() {
   if (!result || state.view !== 'compare') return;
+  const measure = state.chartMeasure || 'digits';
+  $('chart-subtitle').textContent = t('chart.sub.' + measure);
   const steps = result.steps.filter((s) => s.kind === 'op' || state.showConst);
   const xs = steps.map((s) => s.id);
+  const logOf = (cmp) => {
+    if (cmp.status !== 'approx') return null;
+    if (measure === 'abs') return log10Abs(cmp.abs);
+    return cmp.rel ? Math.max(-cmp.digits, log10Abs(cmp.rel)) : null;
+  };
   const series = result.formats.map((f) => {
     const cap = f.p * Math.log10(2);
-    return {
-      id: f.id,
-      label: f.short,
-      color: FORMAT_COLOR[f.id],
-      values: steps.map((s) => {
-        const cmp = cell(s, f).cmp;
+    const raw = steps.map((s) => cell(s, f).cmp);
+    const values = raw.map((cmp) => {
+      if (measure === 'digits') {
         if (cmp.status === 'exact' || cmp.status === 'both-inf') return cap + 1;
         if (cmp.status === 'approx') return cmp.rel ? cmp.digits : 0;
         if (cmp.status === 'mismatch') return 0;
         return null;
-      }),
-      raw: steps.map((s) => cell(s, f).cmp),
-    };
+      }
+      return logOf(cmp);
+    });
+    return { id: f.id, label: f.short, color: FORMAT_COLOR[f.id], values, raw };
   });
+  let yMin = 0;
+  let yMax;
+  const markers = [];
+  if (measure !== 'digits') {
+    const all = series.flatMap((s) => s.values.filter((v) => v != null && Number.isFinite(v)));
+    yMin = all.length ? Math.floor(Math.min(...all)) - 1 : -20;
+    yMax = all.length ? Math.ceil(Math.max(...all)) + 1 : 1;
+    series.forEach((s) => s.raw.forEach((cmp, i) => {
+      if (cmp.status === 'exact') markers.push({ x: xs[i], y: yMin, cls: 'exact-mk' });
+    }));
+  }
   renderLineChart($('chart'), {
     xs,
     series,
-    yMin: 0,
-    yLabel: t('chart.digits'),
+    yMin,
+    yMax,
+    markers,
+    yLabel: t('chart.axis.' + measure),
+    yTick: measure === 'digits' ? undefined : (v) => `1e${Math.round(v)}`.replace('-', '−'),
     xTick: (x) => '#' + x,
     legend: 'items',
     directLabels: true,
@@ -507,7 +536,10 @@ function renderChartPanel() {
     tipValue: (s, v, i) => {
       const c = s.raw[i];
       if (c.status === 'exact') return t('chart.exact');
-      return v == null ? '—' : v.toFixed(1);
+      if (c.status === 'mismatch') return t('sweep.notComparable');
+      if (v == null) return '—';
+      if (measure === 'digits') return v.toFixed(1);
+      return fmtErr(measure === 'abs' ? c.abs : c.rel, 3);
     },
     onPick: (x) => select(x, sel?.fmt === 'exact' ? result.formats[0]?.id ?? 'exact' : sel?.fmt),
   });
@@ -555,7 +587,73 @@ function renderTable() {
 }
 
 function renderDetailPanel() {
-  renderDetail($('detail'), { result, sel, formatsById: fmtById(), select });
+  renderDetail($('detail'), { result, sel, formatsById: fmtById(), select, fitWidth: fitDetailToBits });
+}
+
+// ---------------------------------------------------------------------------
+// Resizable step-detail panel (wide layout only)
+// ---------------------------------------------------------------------------
+
+const DETAIL_KEY = 'precision-lab-detail-width';
+const DETAIL_MIN = 320;
+
+function detailMax() {
+  const layout = document.querySelector('.layout');
+  // keep at least 330 px for the setup column and 360 px for the results
+  return Math.max(DETAIL_MIN, layout.clientWidth - 330 - 360 - 64);
+}
+
+function setDetailWidth(w, save = true) {
+  const width = Math.round(Math.min(detailMax(), Math.max(DETAIL_MIN, w)));
+  document.querySelector('.layout').style.setProperty('--detail-w', `${width}px`);
+  $('detail-resizer').setAttribute('aria-valuenow', String(width));
+  if (save) {
+    try { localStorage.setItem(DETAIL_KEY, String(width)); } catch { /* ignore */ }
+  }
+  // redraw the chart (its width changed) at most once per frame while dragging
+  if (!chartFrame) {
+    chartFrame = requestAnimationFrame(() => { chartFrame = 0; renderChartPanel(); });
+  }
+}
+let chartFrame = 0;
+
+/** Widen the panel so that the longest bit row fits on one line. */
+function fitDetailToBits() {
+  const panel = $('detail-panel');
+  let need = 0;
+  panel.querySelectorAll('.bin-scroll, .bits').forEach((el) => { need = Math.max(need, el.scrollWidth - el.clientWidth); });
+  setDetailWidth(panel.getBoundingClientRect().width + need + 24);
+}
+
+function initResizer() {
+  const handle = $('detail-resizer');
+  try {
+    const w = Number(localStorage.getItem(DETAIL_KEY));
+    if (w) setDetailWidth(w, false);
+  } catch { /* ignore */ }
+  let startX = 0;
+  let startW = 0;
+  const move = (e) => setDetailWidth(startW + (startX - e.clientX));
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.body.classList.remove('resizing');
+  };
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = $('detail-panel').getBoundingClientRect().width;
+    document.body.classList.add('resizing');
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  });
+  handle.addEventListener('dblclick', () => setDetailWidth(440));
+  handle.addEventListener('keydown', (e) => {
+    const w = $('detail-panel').getBoundingClientRect().width;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setDetailWidth(w + 40); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); setDetailWidth(w - 40); }
+  });
+  handle.setAttribute('aria-valuemin', String(DETAIL_MIN));
 }
 
 function select(stepId, fmtId, scroll = true) {
@@ -583,6 +681,7 @@ function openPrecision(p, expBits, stepId = null) {
 }
 
 initControls();
+initResizer();
 applyTexts();
 syncInputs();
 sweepPanel = createSweepPanel($('view-sweep'), {

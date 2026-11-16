@@ -59,4 +59,43 @@ describe('page', () => {
     expect(document.getElementById('rw-after').textContent).toContain('a + (b + c)');
     expect(document.getElementById('rw-error').hidden).toBe(true);
   });
+
+  it('shows the bit-level view and the formal notation of a step', () => {
+    document.querySelector('.view-tab[data-view=compare]').click();
+    pick('sum');
+    // step 2 = a + b; select it in binary64
+    document.querySelector('.vcell[data-step="2"][data-fmt="binary64"]').click();
+    const bin = document.querySelector('#detail .binary');
+    expect(bin).toBeTruthy();
+    expect(bin.textContent).toContain('RN₅₃(a + b)');
+    expect(bin.textContent).toMatch(/δ = −?[0-9.e−]+/);
+    // aligned addition: three or four rows with a guard bit marked in the exact row
+    expect(bin.querySelectorAll('.bin-table').length).toBeGreaterThanOrEqual(2);
+    expect(bin.querySelector('.bin-exact .bin-guard')).toBeTruthy();
+    // 0.1 + 0.2 in double is an exact tie: guard 1, sticky 0
+    expect(bin.textContent).toContain('guard bit 1, sticky bit 0');
+    // the 'fit bits' button and the resizer keyboard control must not throw
+    document.querySelector('#detail .fit-bits').click();
+    document.getElementById('detail-resizer').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+    expect(document.querySelector('.layout').style.getPropertyValue('--detail-w')).toMatch(/px$/);
+  });
+
+  it('shows the bits of a literal conversion: 0.1 in binary32', () => {
+    pick('sum');
+    document.querySelector('.vcell[data-step="0"][data-fmt="binary32"]').click();
+    const kept = [...document.querySelectorAll('#detail .bin-exact .bin-kept')].map((e) => e.textContent);
+    expect(kept[0]).toBe('1.10011001100110011001100');
+    expect(document.querySelector('#detail .bin-exact .bin-guard').textContent).toBe('1');
+  });
+
+  it('switches the error chart to |computed − true|', () => {
+    const m = document.getElementById('chart-measure');
+    m.value = 'abs';
+    m.dispatchEvent(new Event('change'));
+    expect(document.getElementById('chart-subtitle').textContent).toContain('|x̂ − x|');
+    const ticks = [...document.querySelectorAll('#chart .axis-label')].map((e) => e.textContent);
+    expect(ticks.some((x) => x.startsWith('1e'))).toBe(true);
+    m.value = 'digits';
+    m.dispatchEvent(new Event('change'));
+  });
 });

@@ -129,7 +129,7 @@ code, .mono { font-family: var(--mono); font-size: 0.95em; }
 
 .layout {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr) 440px;
+  grid-template-columns: 330px minmax(0, 1fr) var(--detail-w, 440px);
   gap: 16px;
   padding: 16px 20px;
   align-items: start;
@@ -286,7 +286,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 .kv > span:first-child { color: var(--muted); }
 .long { overflow-wrap: anywhere; word-break: break-all; }
 .mono.long { display: block; max-height: 9.5em; overflow: auto; }
-.bits { font-family: var(--mono); font-size: 12.5px; line-height: 1.9; overflow-wrap: anywhere; margin: 8px 0 4px; }
+.bits { font-family: var(--mono); font-size: 12.5px; line-height: 1.9; white-space: nowrap; overflow-x: auto; margin: 8px 0 4px; padding-bottom: 2px; }
 .bits span { padding: 2px 1px; border-radius: 3px; }
 .b-sign { background: var(--bit-sign); }
 .b-exp { background: var(--bit-exp); }
@@ -453,3 +453,48 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 .example-refs li { overflow-wrap: anywhere; line-height: 1.4; }
 .example-refs .ref-role { font-weight: 600; }
 .example-refs .ref-note { color: var(--muted); }
+
+/* Resizable step-detail panel */
+.detail { position: sticky; }
+.detail-resizer {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3;
+  border-radius: 10px 0 0 10px; touch-action: none;
+}
+.detail-resizer::after {
+  content: ''; position: absolute; left: 2px; top: 50%; width: 4px; height: 42px; margin-top: -21px;
+  border-radius: 2px; background: var(--border);
+}
+.detail-resizer:hover::after, .detail-resizer:focus-visible::after, body.resizing .detail-resizer::after { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+@media (max-width: 1279px) { .detail-resizer, .fit-bits { display: none; } }
+.fit-bits { order: 9; margin-left: auto; }
+
+/* Bit-by-bit view of a step */
+.binary h4 { font-size: 12px; margin: 12px 0 4px; color: var(--text-2); font-weight: 600; }
+.binary h4:first-of-type { margin-top: 4px; }
+.bin-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
+.bin-table { border-collapse: collapse; font-size: 12.5px; }
+.bin-table th { text-align: right; font-weight: 500; color: var(--muted); padding: 1px 8px 1px 0; white-space: nowrap; font-size: 12px; vertical-align: baseline; }
+.bin-table td { white-space: nowrap; padding: 1px 0; font-family: var(--mono); letter-spacing: 0.02em; }
+.bin-table .bin-head td { color: var(--muted); font-size: 10.5px; }
+.bin-table .bin-exact td { border-top: 1px solid var(--border); }
+.bin-table .bin-result td { font-weight: 600; }
+.bin-ops { border-collapse: collapse; width: 100%; font-size: 12.5px; table-layout: fixed; }
+.bin-ops th { text-align: left; font-weight: 500; color: var(--text-2); padding: 3px 8px 3px 0; width: 110px; vertical-align: top; font-size: 12px; }
+.bin-ops td { padding: 3px 0; min-width: 0; }
+.bits-inline { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+.bits-inline span { padding: 1px 0; }
+.bin-kept { background: var(--bit-frac); border-radius: 2px; }
+.bin-guard { background: var(--mid-bg); color: var(--mid); font-weight: 700; border-radius: 2px; }
+.bin-sticky { color: var(--muted); background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--muted) 18%, transparent) 3px 5px); }
+.bin-pad { color: color-mix(in srgb, var(--muted) 45%, transparent); }
+.bin-point { color: var(--bad); font-weight: 700; }
+.bin-more { color: var(--muted); }
+.bin-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--text-2); margin-top: 4px; }
+.bin-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.fx { background: var(--surface-2); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 2px; }
+.fx-line { font-size: 13px; overflow-wrap: anywhere; }
+.fx-more summary { font-size: 12px; cursor: pointer; color: var(--text-2); margin-top: 4px; }
+.fx-more p { margin: 4px 0; }
+
+.chart-sub { margin: -4px 0 6px; }

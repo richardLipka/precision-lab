@@ -122,10 +122,6 @@ export const EXAMPLE_REFS = {
     { id: 'rump1988', role: 'origin' },
     { id: 'loh2002', role: 'analysis', note: n('why IEEE 754 machines give different wrong answers', 'proč stroje s IEEE 754 dávají jiné chybné výsledky') },
   ],
-  rumpSteps: [
-    { id: 'rump1988', role: 'origin' },
-    { id: 'loh2002', role: 'analysis' },
-  ],
   muller: [
     { id: 'muller1989', role: 'origin', note: n('the recurrence, there with u₀ = 11/2, u₁ = 61/11', 'rekurence, tam s u₀ = 11/2, u₁ = 61/11') },
     { id: 'muller2018', role: 'version', note: n('the starting values u₀ = 2, u₁ = −4', 'počáteční hodnoty u₀ = 2, u₁ = −4') },
