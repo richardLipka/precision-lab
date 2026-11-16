@@ -1,0 +1,287 @@
+// Cross-checks of the simulator against independent implementations:
+//  * binary64  — the JavaScript engine's native double arithmetic
+//  * binary32  — Math.fround (double has ≥ 2p+2 bits, so fround(a op b) is correctly rounded)
+//  * binary16  — Math.f16round (same argument)
+//  * x87 / binary128 / arbitrary p — GNU MPFR compiled to WebAssembly (gmp-wasm)
+
+import { describe, it, expect, beforeAll } from 'vitest';
+import { init } from 'gmp-wasm';
+import { FORMATS, makeFormat, roundFraction, fpOp, fp, encode, fpToFraction, shortestDecimal } from '../src/engine/ieee.js';
+import { frac, Fraction } from '../src/engine/rational.js';
+
+const F = Object.fromEntries(FORMATS.map((f) => [f.id, f]));
+
+// Deterministic PRNG (mulberry32)
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const buf = new DataView(new ArrayBuffer(8));
+
+/** Random double with interesting distribution: random bits, small ints, near-ties. */
+function randomDouble(r) {
+  const k = r();
+  if (k < 0.5) {
+    buf.setUint32(0, (r() * 2 ** 32) >>> 0);
+    buf.setUint32(4, (r() * 2 ** 32) >>> 0);
+    const x = buf.getFloat64(0);
+    return Number.isFinite(x) ? x : 1.5;
+  }
+  if (k < 0.7) return Math.round((r() - 0.5) * 2000) / 8;
+  if (k < 0.8) return (r() - 0.5) * 2 ** (Math.floor(r() * 60) - 1074 + 52); // subnormal range
+  return (r() - 0.5) * 10 ** Math.floor(r() * 40 - 20);
+}
+
+/** Native double → simulator value (exact, via the bit pattern). */
+function fromDouble(x, fmt = F.binary64) {
+  return roundFraction(doubleToFraction(x), fmt, 'RNE', Object.is(x, -0) ? 1 : 0).value;
+}
+
+function doubleToFraction(x) {
+  buf.setFloat64(0, x);
+  const hi = buf.getUint32(0);
+  const lo = buf.getUint32(4);
+  const sign = hi >>> 31;
+  const e = (hi >>> 20) & 0x7ff;
+  let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo);
+  let q;
+  if (e === 0) q = -1074;
+  else { m |= 1n << 52n; q = e - 1075; }
+  const n = sign ? -m : m;
+  return q >= 0 ? frac(n << BigInt(q), 1n) : frac(n, 1n << BigInt(-q));
+}
+
+/** Simulator value → native double through the binary64 bit pattern. */
+function toDouble(v) {
+  const { bitsStr } = encode(v, F.binary64);
+  const b = BigInt('0b' + bitsStr);
+  buf.setUint32(0, Number(b >> 32n));
+  buf.setUint32(4, Number(b & 0xffffffffn));
+  return buf.getFloat64(0);
+}
+
+function toFloat32(v) {
+  const { bitsStr } = encode(v, F.binary32);
+  const dv = new DataView(new ArrayBuffer(4));
+  dv.setUint32(0, Number(BigInt('0b' + bitsStr)));
+  return dv.getFloat32(0);
+}
+
+function toFloat16(v) {
+  const { bitsStr } = encode(v, F.binary16);
+  const dv = new DataView(new ArrayBuffer(2));
+  dv.setUint16(0, Number(BigInt('0b' + bitsStr)));
+  return dv.getFloat16(0);
+}
+
+const OPS = {
+  '+': (a, b) => a + b,
+  '-': (a, b) => a - b,
+  '*': (a, b) => a * b,
+  '/': (a, b) => a / b,
+};
+
+describe('binary64 matches native JavaScript doubles', () => {
+  const r = rng(12345);
+  for (const op of Object.keys(OPS)) {
+    it(`a ${op} b for 4000 random operand pairs`, () => {
+      for (let i = 0; i < 4000; i++) {
+        const a = randomDouble(r);
+        const b = randomDouble(r);
+        const native = OPS[op](a, b);
+        const sim = fpOp(op, [fromDouble(a), fromDouble(b)], F.binary64, 'RNE').value;
+        const got = toDouble(sim);
+        if (!Object.is(got, native) && !(Number.isNaN(got) && Number.isNaN(native))) {
+          throw new Error(`${a} ${op} ${b}: native ${native}, simulated ${got}`);
+        }
+      }
+    });
+  }
+
+  it('special values follow IEEE 754', () => {
+    const cases = [[1, 0, '/'], [-1, 0, '/'], [0, 0, '/'], [Infinity, -Infinity, '+'], [Infinity, 0, '*'],
+      [-0, -0, '+'], [0, -0, '+'], [1e308, 1e308, '+'], [-1e308, 1e308, '*'], [5e-324, 0.5, '*'], [1, -1, '+']];
+    for (const [a, b, op] of cases) {
+      const sim = fpOp(op, [a === Infinity || a === -Infinity ? fp.inf(a < 0 ? 1 : 0) : fromDouble(a),
+        b === Infinity || b === -Infinity ? fp.inf(b < 0 ? 1 : 0) : fromDouble(b)], F.binary64, 'RNE').value;
+      const native = OPS[op](a, b);
+      const got = toDouble(sim);
+      expect(Object.is(got, native) || (Number.isNaN(got) && Number.isNaN(native))).toBe(true);
+    }
+  });
+
+  it('decimal literals convert like JavaScript', () => {
+    const r2 = rng(7);
+    for (let i = 0; i < 2000; i++) {
+      const x = randomDouble(r2);
+      const s = x.toPrecision(1 + Math.floor(r2() * 20));
+      const v = roundFraction(parseDec(s), F.binary64, 'RNE').value;
+      expect(toDouble(v)).toBe(Number(s));
+    }
+  });
+
+  it('shortest decimal equals Number.prototype.toString', () => {
+    const r2 = rng(99);
+    for (let i = 0; i < 1500; i++) {
+      const x = randomDouble(r2);
+      if (x === 0) continue;
+      const s = shortestDecimal(fromDouble(x), F.binary64).replaceAll('−', '-').replace('e+', 'e');
+      expect(Number(s)).toBe(x);
+      const digits = (y) => y.replace(/^-/, '').replace(/e.*$/, '').replace('.', '').replace(/^0+/, '').replace(/0+$/, '').length;
+      expect(digits(s)).toBe(digits(String(x).replace('e+', 'e')));
+    }
+  });
+});
+
+function parseDec(s) {
+  const m = /^(-?)(\d+)(?:\.(\d*))?(?:e([+-]?\d+))?$/.exec(s);
+  const [, sg, ip, fpart = '', ex = '0'] = m;
+  const e = parseInt(ex, 10) - fpart.length;
+  let n = BigInt(ip + fpart);
+  if (sg) n = -n;
+  return e >= 0 ? frac(n * 10n ** BigInt(e), 1n) : frac(n, 10n ** BigInt(-e));
+}
+
+describe('binary32 / binary16 match Math.fround / Math.f16round', () => {
+  const r = rng(4242);
+  for (const op of Object.keys(OPS)) {
+    it(`float ${op}`, () => {
+      for (let i = 0; i < 3000; i++) {
+        const a = Math.fround(randomDouble(r) * 2 ** Math.floor(r() * 200 - 100));
+        const b = Math.fround(randomDouble(r) * 2 ** Math.floor(r() * 200 - 100));
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        const native = Math.fround(OPS[op](a, b));
+        const sim = fpOp(op, [fromDouble(a, F.binary32), fromDouble(b, F.binary32)], F.binary32, 'RNE').value;
+        const got = toFloat32(sim);
+        if (!Object.is(got, native) && !(Number.isNaN(got) && Number.isNaN(native))) {
+          throw new Error(`float ${a} ${op} ${b}: native ${native}, simulated ${got}`);
+        }
+      }
+    });
+    it(`half ${op}`, () => {
+      for (let i = 0; i < 3000; i++) {
+        const a = Math.f16round((r() - 0.5) * 2 ** Math.floor(r() * 40 - 25));
+        const b = Math.f16round((r() - 0.5) * 2 ** Math.floor(r() * 40 - 25));
+        const native = Math.f16round(OPS[op](a, b));
+        const sim = fpOp(op, [fromDouble(a, F.binary16), fromDouble(b, F.binary16)], F.binary16, 'RNE').value;
+        const got = toFloat16(sim);
+        if (!Object.is(got, native) && !(Number.isNaN(got) && Number.isNaN(native))) {
+          throw new Error(`half ${a} ${op} ${b}: native ${native}, simulated ${got}`);
+        }
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// MPFR oracle for wider formats and all directed rounding modes.
+// MPFR represents x = m·2^e with 1/2 ≤ m < 1, so an IEEE format with
+// exponent range [emin, emax] corresponds to MPFR emin+1 .. emax+1. We test
+// the normal range plus overflow (subnormals are covered by the native tests).
+// ---------------------------------------------------------------------------
+
+function parseMpfrBinary(s) {
+  if (s === 'Infinity' || s === '@Inf@') return 'inf';
+  if (s === '-Infinity' || s === '-@Inf@') return '-inf';
+  const m = /^(-?)([01]*)(?:\.([01]*))?(?:[@e]([+-]?\d+))?$/.exec(s);
+  if (!m) throw new Error('cannot parse MPFR output ' + s);
+  const [, sg, ip = '', fpart = '', ex = '0'] = m;
+  let n = BigInt('0b' + ((ip + fpart) || '0'));
+  if (sg) n = -n;
+  const e = parseInt(ex, 10) - fpart.length;
+  return e >= 0 ? frac(n << BigInt(e), 1n) : frac(n, 1n << BigInt(-e));
+}
+
+describe('wide formats match GNU MPFR', () => {
+  let gmp;
+  let ctx;
+  beforeAll(async () => {
+    gmp = await init();
+    ctx = gmp.getContext({ precisionBits: 64 });
+  });
+
+  const MODES = { RNE: 0, RZ: 1, RU: 2, RD: 3 };
+  const fmts = [F.x87, F.binary128, makeFormat({ id: 'c200', name: 'custom', p: 200, expBits: 20 }), F.binary32];
+
+  for (const fmt of fmts) {
+    it(`${fmt.name}: random rationals, 4 rounding modes`, () => {
+      const r = rng(fmt.p * 31 + 7);
+      gmp.binding.mpfr_set_emin(fmt.emin + 1);
+      gmp.binding.mpfr_set_emax(fmt.emax + 1);
+      try {
+        for (let i = 0; i < 600; i++) {
+          // random numerator/denominator with a few hundred bits, scaled into range
+          const nb = 1 + Math.floor(r() * 300);
+          const db = 1 + Math.floor(r() * 300);
+          let n = 0n;
+          let d = 0n;
+          for (let j = 0; j < nb; j += 30) n = (n << 30n) | BigInt(Math.floor(r() * 2 ** 30));
+          for (let j = 0; j < db; j += 30) d = (d << 30n) | BigInt(Math.floor(r() * 2 ** 30));
+          if (d === 0n) d = 1n;
+          if (n === 0n) n = 1n;
+          if (r() < 0.5) n = -n;
+          // Occasionally force an exact tie at precision p.
+          if (r() < 0.1) { n = ((BigInt(Math.floor(r() * 2 ** 30)) << BigInt(fmt.p)) | 1n) * (n < 0n ? -1n : 1n); d = 2n; }
+          const shift = Math.floor((r() - 0.5) * Math.min(2 * fmt.emax, 4000));
+          const q = shift >= 0 ? frac(n << BigInt(shift), d) : frac(n, d << BigInt(-shift));
+          if (fmt.bounded && Math.abs(Number(q.n.toString(2).length - q.d.toString(2).length)) > 0) {
+            // skip values in the subnormal range (MPFR would flush them)
+            const lg = q.n.toString(2).length - q.d.toString(2).length;
+            if (lg < fmt.emin + 2) continue;
+          }
+          for (const [mode, rm] of Object.entries(MODES)) {
+            const ours = roundFraction(q, fmt, mode).value;
+            const ref = ctx.Float(ctx.Rational((q.s * q.n).toString(), q.d.toString()), { precisionBits: fmt.p, roundingMode: rm });
+            const refStr = ref.toString(2);
+            const refVal = parseMpfrBinary(refStr);
+            if (refVal === 'inf' || refVal === '-inf') {
+              expect(ours.kind).toBe('inf');
+              expect(ours.sign).toBe(refVal === 'inf' ? 0 : 1);
+            } else {
+              const mine = fpToFraction(ours);
+              if (!mine.equals(refVal)) {
+                throw new Error(`${fmt.name} ${mode}: ${q.toFraction()} → ours ${mine.toFraction()} MPFR ${refStr}`);
+              }
+            }
+          }
+        }
+      } finally {
+        gmp.binding.mpfr_set_emin(gmp.binding.mpfr_get_emin_min());
+        gmp.binding.mpfr_set_emax(gmp.binding.mpfr_get_emax_max());
+      }
+    });
+  }
+});
+
+describe('format details', () => {
+  it('encodes well-known bit patterns', () => {
+    const one = roundFraction(new Fraction(1), F.binary32).value;
+    expect(encode(one, F.binary32).hex).toBe('0x3F800000');
+    const tenth = roundFraction(new Fraction(1, 10), F.binary64).value;
+    expect(encode(tenth, F.binary64).hex).toBe('0x3FB999999999999A');
+    const x = roundFraction(new Fraction(1, 10), F.x87).value;
+    expect(encode(x, F.x87).hex).toBe('0x3FFBCCCCCCCCCCCCCCCD');
+    const q = roundFraction(new Fraction(1, 3), F.binary128).value;
+    expect(encode(q, F.binary128).hex).toBe('0x3FFD5555555555555555555555555555');
+    expect(encode(fp.inf(1), F.x87).hex).toBe('0xFFFF8000000000000000');
+    expect(encode(roundFraction(new Fraction(1, 3), F.binary16).value, F.binary16).hex).toBe('0x3555');
+  });
+
+  it('rounding modes on a tie', () => {
+    const f = makeFormat({ id: 't', name: 't', p: 3, expBits: 4 });
+    const val = (r, m) => fpToFraction(roundFraction(r, f, m).value).toFraction();
+    // 9/8 = 1.001₂ lies halfway between 1.00₂ and 1.01₂
+    expect(val(new Fraction(9, 8), 'RNE')).toBe('1');
+    expect(val(new Fraction(9, 8), 'RNA')).toBe('5/4');
+    expect(val(new Fraction(-9, 8), 'RU')).toBe('-1');
+    expect(val(new Fraction(-9, 8), 'RD')).toBe('-5/4');
+    expect(val(new Fraction(11, 8), 'RNE')).toBe('3/2'); // 1.011 → 1.10 (even)
+  });
+});

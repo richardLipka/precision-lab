@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Precision Lab</title>
+  <meta name="description" content="Step-by-step simulation of IEEE 754 float, double, x87 extended and arbitrary-precision arithmetic compared with exact rational results. Krokové simulace aritmetiky IEEE 754." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232a78d6'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='monospace'%3E2ᵉ%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>Precision Lab</h1>
+      <p class="tagline" data-i18n="app.tagline"></p>
+    </div>
+    <div class="header-actions">
+      <button id="lang" class="btn ghost" data-i18n="btn.lang" data-i18n-title="btn.lang.title"></button>
+      <button id="share" class="btn ghost" data-i18n="btn.copyLink" data-i18n-title="btn.copyLink.title"></button>
+      <button id="theme" class="btn ghost" data-i18n="btn.theme" data-i18n-title="btn.theme.title"></button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel setup" aria-label="Setup">
+      <section>
+        <label class="label" for="example" data-i18n="setup.example"></label>
+        <select id="example"></select>
+        <p id="example-blurb" class="muted small"></p>
+      </section>
+
+      <section>
+        <div class="section-title"><h2 data-i18n="setup.variables"></h2><button id="add-var" class="btn small" data-i18n="setup.add"></button></div>
+        <table class="vars" id="vars"><thead><tr><th data-i18n="setup.name"></th><th data-i18n="setup.value"></th><th></th></tr></thead><tbody></tbody></table>
+        <p class="muted small" data-i18n-html="setup.varsHint"></p>
+      </section>
+
+      <section>
+        <div class="section-title"><h2 data-i18n="setup.program"></h2></div>
+        <textarea id="program" spellcheck="false" rows="8" data-i18n-aria="setup.program"></textarea>
+        <div id="error" class="error" role="alert" hidden></div>
+        <details class="syntax">
+          <summary data-i18n="setup.syntax"></summary>
+          <ul class="small">
+            <li data-i18n-html="syntax.ops"></li>
+            <li data-i18n-html="syntax.pow"></li>
+            <li data-i18n-html="syntax.assign"></li>
+            <li data-i18n-html="syntax.repeat"></li>
+            <li data-i18n-html="syntax.fn"></li>
+            <li data-i18n-html="syntax.fns"></li>
+            <li data-i18n-html="syntax.comment"></li>
+            <li data-i18n-html="syntax.order"></li>
+          </ul>
+        </details>
+      </section>
+
+      <section>
+        <h2 data-i18n="setup.formats"></h2>
+        <div id="formats" class="formats"></div>
+        <div class="custom-fmt">
+          <label class="check"><input type="checkbox" id="custom-on" /> <span data-i18n="setup.customFmt"></span></label>
+          <label>p <input type="number" id="custom-p" min="1" max="100000" value="100" /> <span data-i18n="setup.bits"></span></label>
+          <label><span data-i18n="setup.exp"></span> <input type="number" id="custom-e" min="2" max="30" value="15" /> <span data-i18n="setup.bits"></span></label>
+          <label class="check"><input type="checkbox" id="custom-unb" checked /> <span data-i18n="setup.unbounded"></span></label>
+        </div>
+        <p class="muted small" data-i18n="setup.exactNote"></p>
+      </section>
+
+      <section>
+        <label class="label" for="mode" data-i18n="setup.mode"></label>
+        <select id="mode"></select>
+        <label class="check"><input type="checkbox" id="show-const" checked /> <span data-i18n="setup.showConst"></span></label>
+        <label class="label" for="ref-digits" data-i18n="setup.refDigits"></label>
+        <input type="number" id="ref-digits" min="20" max="1000" value="60" class="ref-digits" />
+        <p class="muted small" data-i18n="setup.refHint"></p>
+      </section>
+    </aside>
+
+    <section class="results" aria-label="Results">
+      <div class="view-tabs" role="tablist">
+        <button class="view-tab" role="tab" data-view="compare" data-i18n="view.compare"></button>
+        <button class="view-tab" role="tab" data-view="sweep" data-i18n="view.sweep"></button>
+        <button class="view-tab" role="tab" data-view="rewrite" data-i18n="view.rewrite"></button>
+      </div>
+
+      <div id="view-compare" class="view">
+        <div id="summary" class="summary"></div>
+        <div id="diagnosis" class="panel diagnosis"></div>
+        <div class="panel">
+          <div class="section-title"><h2 data-i18n="chart.title"></h2><span class="muted small" data-i18n="chart.subtitle"></span></div>
+          <div id="chart"></div>
+        </div>
+        <div class="panel">
+          <div class="section-title"><h2 data-i18n="steps.title"></h2><span id="step-count" class="muted small"></span></div>
+          <div class="table-scroll"><table id="steps" class="steps"></table></div>
+          <div id="pager" class="pager"></div>
+        </div>
+      </div>
+
+      <div id="view-sweep" class="view" hidden></div>
+      <div id="view-rewrite" class="view" hidden></div>
+    </section>
+
+    <aside class="panel detail" id="detail" aria-label="Step detail"></aside>
+  </main>
+  <footer class="app-footer">
+    <p class="muted small" data-i18n-html="footer"></p>
+    <p class="footer-credit">
+      © 2026 <a href="https://home.zcu.cz/~lipka/" rel="noopener">Richard Lipka</a>
+      <span aria-hidden="true">·</span>
+      <a href="mailto:lipka@fav.zcu.cz">lipka@fav.zcu.cz</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/richardLipka/precision-lab" rel="noopener">GitHub</a>
+      <span aria-hidden="true">·</span>
+      <span data-i18n="footer.license"></span>
+    </p>
+    <p class="footer-affiliation">
+      <a class="footer-logo" href="https://www.kiv.zcu.cz/cs" rel="noopener" data-i18n-title="footer.logoTitle">
+        <svg class="fav-mark" viewBox="0 0 312.129 132.969" aria-hidden="true" focusable="false"><g fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"><path d="M269.956,104.102h19.396l19.4-73.25H291.93l-10.316,47.454c-0.929,4.646-1.441,7.842-1.749,11.142h-0.413c-0.308-3.3-0.829-6.496-1.754-11.142l-10.321-47.454h-16.812L269.956,104.102L269.956,104.102z M210.069,75.623l5.159-21.562c0.824-3.404,1.55-6.292,2.062-10.524h0.209c0.616,4.232,1.337,7.12,2.063,10.525l5.158,21.561H210.069L210.069,75.623z M231.632,104.102h16.092l-20.524-73.25h-19.505l-20.628,73.25h16.091l4.125-17.025h20.225L231.632,104.102L231.632,104.102z M182.773,43.126V30.852h-41.991v73.25h15.991V73.043h24.346V60.976h-24.346v-17.85H182.773L182.773,43.126z"/><polygon points="88.531,51.146 88.531,81.837 115.099,66.483 88.531,51.146"/><path d="M0,132.935l38.643-22.302c-10.798-3.607-18.564-11.635-18.698-25.514V39.205h19.864v44.926c0.305,9.138,5.08,14.903,14.427,14.903c2.641,0,4.902-0.48,6.818-1.347l2.087-1.205c3.48-2.529,5.317-6.813,5.506-12.352V39.689h0.043L0,0.034V132.935L0,132.935z"/></g></svg>
+        <span class="visually-hidden" data-i18n="footer.logoTitle"></span>
+      </a>
+      <span data-i18n="footer.affiliation"></span>
+    </p>
+  </footer>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
