@@ -51,6 +51,7 @@ export function createSweepPanel(host, api) {
           <select id="sw-measure"><option value="abs"></option><option value="rel"></option><option value="digits"></option></select></label></div>
       <p class="muted small" data-s="chartPsub"></p>
       <div id="sw-chart-p"></div>
+      <p class="muted small" id="sw-chart-note"></p>
     </div>
     <div class="panel">
       <div class="section-title"><h2 data-s="chartSteps"></h2>
@@ -219,30 +220,42 @@ export function createSweepPanel(host, api) {
     const rows = out.rows.filter((r) => r.final);
     const xs = rows.map((r) => r.p);
     const exLog = out.meta.exactLog10;
+    const cap = (p) => p * LOG10_2 + 1; // where "exact" is drawn on the digits scale
     let vals;
-    let ideal;
+    let best;
+    let bound;
     if (measure === 'digits') {
-      vals = rows.map((r) => (r.final.digits == null ? null : r.final.digits === Infinity ? r.p * LOG10_2 + 1 : r.final.digits));
-      ideal = rows.map((r) => r.p * LOG10_2);
+      vals = rows.map((r) => (r.final.digits == null ? null : r.final.digits === Infinity ? cap(r.p) : r.final.digits));
+      best = rows.map((r) => (r.final.bestDigits == null ? null : r.final.bestDigits === Infinity ? cap(r.p) : r.final.bestDigits));
+      bound = rows.map((r) => r.p * LOG10_2);
     } else {
       const key = measure === 'abs' ? 'log10Abs' : 'log10Rel';
+      const bkey = measure === 'abs' ? 'bestLog10Abs' : 'bestLog10Rel';
       vals = rows.map((r) => (Number.isFinite(r.final[key]) ? r.final[key] : null));
-      ideal = rows.map((r) => (measure === 'abs' ? (Number.isFinite(exLog) ? exLog - r.p * LOG10_2 : null) : -r.p * LOG10_2));
+      best = rows.map((r) => (Number.isFinite(r.final[bkey]) ? r.final[bkey] : null));
+      bound = rows.map((r) => (measure === 'abs' ? (Number.isFinite(exLog) ? exLog - r.p * LOG10_2 : null) : -r.p * LOG10_2));
     }
-    const finiteVals = [...vals, ...ideal].filter((v) => v != null && Number.isFinite(v));
-    let yMin = Math.min(...finiteVals);
-    let yMax = Math.max(...finiteVals);
+    const finiteVals = [...vals, ...best, ...bound].filter((v) => v != null && Number.isFinite(v));
+    let yMin = finiteVals.length ? Math.min(...finiteVals) : 0;
+    let yMax = finiteVals.length ? Math.max(...finiteVals) : 1;
     if (measure !== 'digits') { yMin = Math.floor(yMin) - 1; yMax = Math.ceil(yMax) + 1; } else { yMin = 0; yMax = Math.ceil(yMax) + 1; }
     const markers = [];
     if (measure !== 'digits') {
-      rows.forEach((r) => { if (r.final.status === 'exact') markers.push({ x: r.p, y: yMin, cls: 'exact-mk' }); });
+      // zero error cannot be drawn on a log scale: markers on the bottom edge
+      rows.forEach((r) => {
+        if (r.final.bestLog10Abs === -Infinity) markers.push({ x: r.p, y: yMin, cls: 'best-mk' });
+        if (r.final.status === 'exact') markers.push({ x: r.p, y: yMin, cls: 'exact-mk' });
+      });
     }
+    const shift = Number.isFinite(exLog) ? exLog : null;
+    $('sw-chart-note').textContent = t('sweep.note.' + measure, { shift: shift == null ? '—' : shift.toFixed(2) });
     const yTick = measure === 'digits' ? (v) => String(Math.round(v)) : (v) => `1e${Math.round(v)}`.replace('-', '−');
     renderLineChart($('sw-chart-p'), {
       xs,
       series: [
         { id: 'measured', label: t('sweep.measured'), color: 'var(--series-1)', values: vals },
-        { id: 'ideal', label: t('sweep.ideal'), color: 'var(--muted)', values: ideal, dashed: true, width: 1.5 },
+        { id: 'best', label: t('sweep.best'), color: 'var(--series-3)', values: best, dashed: true, width: 1.5 },
+        { id: 'bound', label: t('sweep.bound'), color: 'var(--muted)', values: bound, dotted: true, width: 1.25 },
       ],
       yMin, yMax, markers,
       yLabel: measure === 'abs' ? t('sweep.axisAbs') : measure === 'rel' ? t('sweep.axisRel') : t('chart.digits'),
@@ -251,11 +264,16 @@ export function createSweepPanel(host, api) {
       legend: 'items',
       tipTitle: (x, i) => `${t('sweep.tipP', { p: x })} → ${rows[i].final.value}`,
       tipValue: (s, v, i) => {
+        const f = rows[i].final;
         if (s.id === 'measured') {
-          const f = rows[i].final;
           if (f.status === 'exact') return t('sweep.exactPoint');
           if (f.digits == null) return t('sweep.notComparable');
           return measure === 'digits' ? f.digits.toFixed(1) : `${f.absText ?? ''} · ${f.digits.toFixed(1)} d`;
+        }
+        if (s.id === 'best') {
+          if (f.bestDigits === Infinity) return t('sweep.exactPoint');
+          if (f.bestDigits == null && f.bestText == null) return '—';
+          return measure === 'digits' ? f.bestDigits.toFixed(1) : `${f.bestText} · ${f.bestDigits == null ? '—' : f.bestDigits.toFixed(1)} d`;
         }
         return v == null ? '—' : measure === 'digits' ? v.toFixed(1) : `1e${v.toFixed(1)}`;
       },

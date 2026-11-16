@@ -131,3 +131,30 @@ describe('precision sweep', () => {
     expect(r.steps[r.result].fmt.p1.value.kind).toBe('finite');
   });
 });
+
+describe('precision sweep reference lines', () => {
+  it('the computed error is never below the best possible p-bit result, and the rel/abs curves differ only by log10|x|', async () => {
+    const { EXAMPLES } = await import('../src/ui/examples.js');
+    for (const id of ['loop', 'harmonic', 'cancel', 'rump', 'needle', 'golden']) {
+      const ex = EXAMPLES.find((e) => e.id === id);
+      const out = runSweep({ variables: ex.variables, program: ex.program, mode: 'RNE', precisions: parsePrecisions('5-80:5'), expBits: null });
+      for (const r of out.rows) {
+        const f = r.final;
+        if (f.status === 'approx' && Number.isFinite(f.bestLog10Abs)) {
+          expect(f.log10Abs, `${id} p=${r.p}`).toBeGreaterThanOrEqual(f.bestLog10Abs - 1e-9);
+        }
+        if (f.status === 'approx' && Number.isFinite(f.log10Rel)) {
+          expect(f.log10Rel + out.meta.exactLog10, `${id} p=${r.p}`).toBeCloseTo(f.log10Abs, 9);
+        }
+      }
+    }
+  }, 60000);
+
+  it('best possible error is zero when the true value fits into p bits', () => {
+    const out = runSweep({ variables: [], program: 's = 0\nrepeat 10 { s = s + 0.1 }\ns', mode: 'RNE', precisions: parsePrecisions('20-30:10'), expBits: null });
+    for (const r of out.rows) {
+      expect(r.final.bestLog10Abs).toBe(-Infinity); // the true value is 1
+      expect(r.final.log10Abs).toBeGreaterThan(-Infinity); // the loop still has an error
+    }
+  });
+});

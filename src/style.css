@@ -498,3 +498,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .fx-more p { margin: 4px 0; }
 
 .chart-sub { margin: -4px 0 6px; }
+
+/* Sweep chart reference lines and zero-error markers */
+.chart-svg .series-line.dotted { stroke-dasharray: 1.5 3.5; }
+.swatch-line.dotted { border-top-style: dotted; }
+.chart-svg .marker.best-mk { fill: var(--surface); stroke: var(--series-3); stroke-width: 1.5; }
+.chart-svg .marker.exact-mk { fill: var(--good); stroke: var(--surface); }
+#sw-chart-note { margin: 6px 0 0; }

@@ -44,7 +44,8 @@ operaci po operaci, a ukáže, kde a proč se výsledky rozcházejí.
 ### Průchod přesnostmi
 Spustí program pro každou přesnost p ze seznamu nebo rozsahu (např. `1-1000`, `11, 24, 53, 64, 113`).
 Ukáže:
-* chybu výsledku v závislosti na p, vedle ideální čáry „jediného zaokrouhlení“
+* chybu výsledku v závislosti na p vedle nejlepšího možného p-bitového výsledku (skutečná hodnota jednou
+  zaokrouhlená; žádný výpočet nemůže být blíž, mezera je tedy ztráta výpočtu) a meze 2⁻ᵖ·|x|
 * platné číslice krok za krokem, jednu čáru pro každou přesnost
 * verdikt: konverguje výsledek, od kterého p je správně 1 / 6 / 15 číslic, je tu ostrý práh
   (Rump: p = 122) a kolik číslic algoritmus ztrácí.
@@ -128,7 +129,7 @@ myšlenka) objevil poprvé; ostatní zdroje jev vysvětlují. Všechny DOI byly 
 
 ## Ověření
 
-`npm test` (144 testů včetně kouřového testu stránky v happy-dom) porovnává simulátor s nezávislými implementacemi:
+`npm test` (146 testů včetně kouřového testu stránky v happy-dom) porovnává simulátor s nezávislými implementacemi:
 * binary64 s nativními doubly JavaScriptu: + − × ÷, speciální hodnoty, převod desetinných čísel a
   nejkratší zpětně převoditelný výpis
 * binary32 s `Math.fround`, binary16 s `Math.f16round`

@@ -43,7 +43,8 @@ operation by operation, and shows where and why the results drift apart.
 ### Precision sweep
 Runs the program with every precision p from a list or range (e.g. `1-1000`, `11, 24, 53, 64, 113`).
 It shows:
-* the error of the result against p, next to the ideal "one rounding" line
+* the error of the result against p, next to the best possible p-bit result (the true value rounded
+  once; no computed result can be closer, so the gap is what the calculation loses) and the bound 2⁻ᵖ·|x|
 * correct digits step by step, one line per precision
 * a verdict: does it converge, from which p are 1 / 6 / 15 digits correct, is there a sharp
   threshold (Rump: p = 122), and how many digits the algorithm loses.
@@ -144,7 +145,7 @@ idea) appeared first; the others explain the effect. All DOIs were checked again
 
 ## Verification
 
-`npm test` (144 tests, including a page smoke test in happy-dom) checks the simulator against independent implementations:
+`npm test` (146 tests, including a page smoke test in happy-dom) checks the simulator against independent implementations:
 * binary64 against native JavaScript doubles: + − × ÷, special values, decimal conversion and the
   shortest round-trip output
 * binary32 against `Math.fround`, binary16 against `Math.f16round`

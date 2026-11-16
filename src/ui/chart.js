@@ -10,6 +10,11 @@ function el(tag, attrs = {}, parent) {
   return e;
 }
 
+function swatchHtml(s) {
+  if (s.dashed || s.dotted) return `<span class="swatch-line ${s.dashed ? 'dashed' : 'dotted'}" style="border-color:${s.color}"></span>`;
+  return `<span class="swatch" style="background:${s.color}"></span>`;
+}
+
 export function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -53,7 +58,7 @@ export function renderLineChart(host, o) {
     const legend = document.createElement('div');
     legend.className = 'chart-legend';
     if (o.legend === 'items') {
-      legend.innerHTML = series.map((s) => `<span class="legend-item"><span class="${s.dashed ? 'swatch-line dashed' : 'swatch'}" style="${s.dashed ? `border-color:${s.color}` : `background:${s.color}`}"></span>${escapeHtml(s.label)}</span>`).join('');
+      legend.innerHTML = series.map((s) => `<span class="legend-item">${swatchHtml(s)}${escapeHtml(s.label)}</span>`).join('');
     } else {
       const g = o.legend;
       legend.innerHTML = `<span class="legend-grad"><span>${escapeHtml(g.low)}</span><span class="grad" style="background:linear-gradient(90deg, ${g.gradient.join(', ')})"></span><span>${escapeHtml(g.high)}</span></span>${g.note ? `<span class="muted">${escapeHtml(g.note)}</span>` : ''}`;
@@ -117,8 +122,8 @@ export function renderLineChart(host, o) {
       d += `${pen ? 'L' : 'M'}${sx(xs[i]).toFixed(1)},${sy(v).toFixed(1)}`;
       pen = true;
     });
-    el('path', { d, class: 'series-line' + (s.dashed ? ' dashed' : ''), stroke: s.color, 'stroke-width': s.width || 2 }, svg);
-    if (xs.length <= 60 && !s.dashed) {
+    el('path', { d, class: 'series-line' + (s.dashed ? ' dashed' : '') + (s.dotted ? ' dotted' : ''), stroke: s.color, 'stroke-width': s.width || 2 }, svg);
+    if (xs.length <= 60 && !s.dashed && !s.dotted) {
       s.values.forEach((v, i) => {
         if (v == null || !Number.isFinite(v)) return;
         el('circle', { cx: sx(xs[i]), cy: sy(v), r: 3, fill: s.color, class: 'series-dot' }, svg);
@@ -174,7 +179,7 @@ export function renderLineChart(host, o) {
     cross.setAttribute('x2', sx(xs[i]));
     cross.setAttribute('visibility', 'visible');
     tip.hidden = false;
-    const rows = series.slice(0, 14).map((s) => `<div class="tip-row"><span class="${s.dashed ? 'swatch-line dashed' : 'swatch'}" style="${s.dashed ? `border-color:${s.color}` : `background:${s.color}`}"></span>${escapeHtml(s.label)}<b>${escapeHtml(o.tipValue ? o.tipValue(s, s.values[i], i) : String(s.values[i]))}</b></div>`);
+    const rows = series.slice(0, 14).map((s) => `<div class="tip-row">${swatchHtml(s)}${escapeHtml(s.label)}<b>${escapeHtml(o.tipValue ? o.tipValue(s, s.values[i], i) : String(s.values[i]))}</b></div>`);
     if (series.length > 14) rows.push('<div class="muted">…</div>');
     tip.innerHTML = `<div class="tip-title">${escapeHtml(o.tipTitle ? o.tipTitle(xs[i], i) : String(xs[i]))}</div>${rows.join('')}`;
     const px = (sx(xs[i]) / W) * wrap.clientWidth;

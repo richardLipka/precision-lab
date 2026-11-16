@@ -2,7 +2,7 @@
 // record how the error of every step (and of the result) depends on p.
 
 import { evaluate } from './evaluator.js';
-import { makeFormat, shortestDecimal, exactShort } from './ieee.js';
+import { makeFormat, shortestDecimal, exactShort, roundFraction, fpToFraction } from './ieee.js';
 import { compareToExact } from './metrics.js';
 import { fmtFrac, log10Abs, log2Big, dyadic } from './rational.js';
 import { EngineError } from './messages.js';
@@ -115,6 +115,7 @@ export function runSweep(cfg, onProgress) {
           log10Abs: cmp.status === 'exact' ? -Infinity : cmp.status === 'approx' ? log10(cmp.abs) : Infinity,
           log10Rel: cmp.status === 'exact' ? -Infinity : cmp.status === 'approx' && cmp.rel ? cmp.log10Rel : Infinity,
           absText: cmp.status === 'approx' ? fmtFrac(cmp.abs, 3, { plainMin: -3, plainMax: 5 }) : null,
+          ...bestPossible(root.exact, f),
         };
       }
       rows.push({ p: f.p, digits, final });
@@ -126,6 +127,25 @@ export function runSweep(cfg, onProgress) {
 
 function log10(r) {
   return log10Abs(r);
+}
+
+/**
+ * The best any p-bit result can do: the true value rounded once to the nearest
+ * p-bit number. No computed result can be closer to the true value, so the
+ * computed error is always ≥ this one; the gap is what the calculation loses.
+ * (The bound of one rounding, u·|x| = 2^−p·|x|, is only an upper limit of it.)
+ */
+export function bestPossible(X, fmt) {
+  if (X.kind !== 'finite') return { bestLog10Abs: null, bestLog10Rel: null, bestDigits: null };
+  const r = roundFraction(X.r, fmt, 'RNE').value;
+  if (r.kind !== 'finite' && r.kind !== 'zero') return { bestLog10Abs: null, bestLog10Rel: null, bestDigits: null };
+  const err = fpToFraction(r).sub(X.r).abs();
+  if (err.n === 0n) return { bestLog10Abs: -Infinity, bestLog10Rel: X.r.n === 0n ? null : -Infinity, bestDigits: Infinity, bestText: '0' };
+  const la = log10Abs(err);
+  const lr = X.r.n === 0n ? null : la - log10Abs(X.r);
+  let d = lr == null ? null : Math.max(0, -lr);
+  if (d != null && X.approx) d = Math.min(d, X.reliable);
+  return { bestLog10Abs: la, bestLog10Rel: lr, bestDigits: d, bestText: fmtFrac(err, 3, { plainMin: -3, plainMax: 5 }) };
 }
 
 function fracOf(v) {
@@ -174,7 +194,9 @@ export function analyzeConvergence(rows, meta) {
   const regular = finitePts.filter((x) => x.p >= start);
   const upper = regular.filter((x) => x.p >= (start + pMax) / 2);
   const sample = upper.length >= 3 ? upper : regular.length >= 3 ? regular : finitePts;
-  const losses = sample.map((x) => x.p * LOG10_2 - x.d).sort((a, b) => a - b);
+  // loss = digits of the best possible p-bit result minus the digits achieved
+  const bestOf = (x) => (Number.isFinite(x.final.bestDigits) ? x.final.bestDigits : x.p * LOG10_2);
+  const losses = sample.map((x) => bestOf(x) - x.d).sort((a, b) => a - b);
   const loss = losses.length ? losses[Math.floor(losses.length / 2)] : null;
 
   // Slope of correct digits per bit (least squares over the same sample)
