@@ -176,12 +176,50 @@ code, .mono { font-family: var(--mono); font-size: 0.95em; }
 }
 .results { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .setup { display: flex; flex-direction: column; gap: 18px; }
-.setup section { display: flex; flex-direction: column; gap: 6px; }
+.setup > section { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
 .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .setup .section-title { margin-bottom: 0; }
 .label { font-weight: 600; font-size: 13px; }
-.detail { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
-@media (max-width: 1279px) { .detail { position: static; max-height: none; } }
+
+/* Both sidebars stay pinned beside the results column and scroll independently. */
+.setup, .detail {
+  --scrollbar-thumb: var(--muted);
+  --scrollbar-track: var(--surface);
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+@supports not (scrollbar-color: auto) {
+  .setup, .detail { scrollbar-width: auto; }
+  .setup::-webkit-scrollbar, .detail::-webkit-scrollbar { width: 8px; height: 8px; }
+  .setup::-webkit-scrollbar-thumb, .detail::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+  .setup::-webkit-scrollbar-track, .detail::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+}
+@media (max-width: 1279px) {
+  .detail {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: auto;
+    scrollbar-gutter: auto;
+  }
+}
+@media (max-width: 860px) {
+  .setup {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: auto;
+    scrollbar-gutter: auto;
+  }
+}
 
 select, input, textarea {
   font: inherit; color: var(--text); background: var(--surface);
@@ -217,7 +255,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 
 .check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .formats { display: flex; flex-direction: column; gap: 4px; }
-.fmt-check .muted { margin-left: auto; }
+.fmt-check .swatch { margin-right: 0; }
+.fmt-check .muted { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
 .custom-fmt { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding-top: 6px; border-top: 1px dashed var(--border); }
 .custom-fmt input[type='number'] { width: 76px; padding: 3px 6px; }
 .syntax summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
@@ -548,8 +587,7 @@ details:not([open])::details-content { block-size: 0; }
 .example-refs .ref-role { font-weight: 600; }
 .example-refs .ref-note { color: var(--muted); }
 
-/* Resizable step-detail panel */
-.detail { position: sticky; }
+/* Resizable step-detail panel (sticky positioning is set on .setup, .detail above) */
 .detail-resizer {
   position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3;
   border-radius: 10px 0 0 10px; touch-action: none;

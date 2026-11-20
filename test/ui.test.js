@@ -810,4 +810,18 @@ describe('diagnosis wording, helpers, saved state and the step table', () => {
       pick('sum');
     }
   });
+
+  it('pins both setup and detail sidebars as independently scrollable regions with responsive resets', () => {
+    const css = readFileSync(join(import.meta.dirname, '..', 'src', 'style.css'), 'utf8');
+    // Both .setup and .detail share sticky viewport-bounded independent scrolling
+    expect(css).toMatch(/\.setup,\s*\.detail\s*\{[^}]*position:\s*sticky;[^}]*max-height:\s*calc\(100dvh - 24px\);[^}]*overflow:\s*auto;[^}]*overscroll-behavior:\s*contain;[^}]*scrollbar-gutter:\s*stable;/s);
+    // Setup sections must not shrink inside the scrollable flex column
+    expect(css).toMatch(/\.setup\s*>\s*section\s*\{[^}]*flex:\s*0 0 auto;/s);
+    // Responsive breakpoints unpin .detail below 1280px and .setup below 861px
+    const detailMedia = css.search(/@media\s*\(max-width:\s*1279px\)\s*\{\s*\.detail\s*\{[^}]*position:\s*static;/s);
+    expect(detailMedia).toBeGreaterThan(-1);
+    expect(css).toMatch(/@media\s*\(max-width:\s*860px\)\s*\{\s*\.setup\s*\{[^}]*position:\s*static;/s);
+    // No later unguarded .detail { position: sticky } may override the 1279px reset
+    expect(css.slice(detailMedia)).not.toMatch(/^\s*\.detail\s*\{\s*position:\s*sticky;/m);
+  });
 });
