@@ -109,9 +109,9 @@ export function createRewritePanel(host, api) {
   function evaluateBoth() {
     const cfg = api.config();
     const formats = api.formats();
-    const key = JSON.stringify([st().base, st().current, cfg.variables, cfg.mode, cfg.refDigits, formats.map((f) => [f.id, f.p, f.expBits])]);
+    const key = JSON.stringify([st().base, st().current, cfg.variables, cfg.mode, cfg.overflowMode, cfg.refDigits, formats.map((f) => [f.id, f.p, f.expBits, f.overflowMode])]);
     if (cache?.key === key) return cache;
-    const run = (program) => evaluate({ variables: cfg.variables, program, formats, mode: cfg.mode, refDigits: cfg.refDigits });
+    const run = (program) => evaluate({ variables: cfg.variables, program, formats, mode: cfg.mode, overflowMode: cfg.overflowMode || 'sat', refDigits: cfg.refDigits });
     cache = { key, before: run(st().base), after: run(st().current), formats };
     return cache;
   }

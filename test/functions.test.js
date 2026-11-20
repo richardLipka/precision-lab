@@ -208,7 +208,7 @@ describe('functions in wide formats vs GNU MPFR', () => {
       const refVal = parseBin(ref.toString(2));
       expect(fpToFraction(ours.value).equals(refVal), `${fmt.id} ${name}`).toBe(true);
     };
-    for (const fmt of FORMATS) {
+    for (const fmt of FORMATS.filter((f) => f.family === 'binfloat')) {
       const piV = fpPi(fmt, 'RNE').value;
       const halfPi = roundFraction(fpToFraction(piV).div(2), fmt, 'RNE').value;
       mpfrCheck('sin', [piV], fmt);

@@ -1,6 +1,6 @@
 import './style.css';
 import { evaluate } from './engine/evaluator.js';
-import { FORMATS, ROUNDING_MODES, makeFormat, shortestDecimal, exactShort } from './engine/ieee.js';
+import { FORMATS, ROUNDING_MODES, makeFormat, withOverflowMode, shortestDecimal, exactShort } from './engine/ieee.js';
 import { compareToExact, correctDigits, qualityOf, fullDigits, exactLevel } from './engine/metrics.js';
 import { explainStep, diagnose, sameOperands } from './engine/explain.js';
 import { MAX_DEC_EXP } from './engine/real.js';
@@ -25,7 +25,13 @@ const FORMAT_COLOR = {
   binary16: 'var(--series-5)',
   bfloat16: 'var(--series-6)',
   custom: 'var(--series-7)',
+  decimal64_bid: 'var(--series-8)',
+  decimal64_dpd: 'var(--series-9)',
+  q16_16: 'var(--series-10)',
+  dec18_4: 'var(--series-11)',
 };
+
+const FORMAT_GROUPS = ['binfloat', 'decfloat', 'fixed'];
 
 const PAGE = 150;
 const STORAGE_KEY = 'precision-lab-state-v1';
@@ -41,7 +47,11 @@ const defaultState = () => {
     example: ex.id,
     variables: ex.variables.map((v) => ({ ...v })),
     program: ex.program,
-    formats: { binary16: false, bfloat16: false, binary32: true, binary64: true, x87: true, binary128: false },
+    formats: {
+      binary16: false, bfloat16: false, binary32: true, binary64: true, x87: true, binary128: false,
+      decimal64_bid: false, decimal64_dpd: false, q16_16: false, dec18_4: false,
+    },
+    overflowMode: 'sat',
     custom: { on: false, p: 100, expBits: 15, unbounded: true },
     mode: 'RNE',
     showConst: true,
@@ -81,6 +91,7 @@ function merge(base, extra) {
   return {
     ...base,
     ...extra,
+    formats: { ...base.formats, ...(extra?.formats || {}) },
     sweep: { ...base.sweep, ...(extra?.sweep || {}) },
     custom: { ...base.custom, ...(extra?.custom || {}) },
     rewrite: { ...base.rewrite, ...(extra?.rewrite || {}) },
@@ -136,6 +147,14 @@ function initControls() {
   $('formats').addEventListener('change', (e) => {
     const id = e.target.dataset.fmt;
     if (id) { state.formats[id] = e.target.checked; run(); }
+  });
+
+  $('fixed-overflow-box').addEventListener('change', (e) => {
+    if (e.target.name === 'fixed-overflow') {
+      state.overflowMode = e.target.value === 'wrap' ? 'wrap' : 'sat';
+      renderOverflowHint();
+      run();
+    }
   });
 
   $('mode').addEventListener('change', (e) => { state.mode = e.target.value; renderModeHint(); run(); });
@@ -318,10 +337,17 @@ function applyTexts() {
   applyStatic();
   const lang = getLang();
   $('example').innerHTML = exampleOptionsHtml(lang);
-  $('formats').innerHTML = FORMATS.map((f) => `
+  const fmtMeta = (f) => {
+    if (f.family === 'decfloat') return `<span class="muted small" title="${escapeHtml(t('setup.pTitleDec', { p: f.p }))}">p=${f.p}d</span>`;
+    if (f.fixed) return `<span class="muted small" title="${escapeHtml(t('setup.pTitleFixed', { bits: f.totalBits, step: fmtErr(f.step, 4) }))}">${f.radix === 2 ? `s${f.intBits}.${f.fracBits}` : `×10⁻${f.scaleDigits}`}</span>`;
+    return `<span class="muted small" title="${escapeHtml(t('setup.pTitle', { p: f.p, d: fullDigits(f).toFixed(1) }))}">p=${f.p}</span>`;
+  };
+  $('formats').innerHTML = FORMAT_GROUPS.map((g) => `<fieldset class="fmt-group"><legend>${escapeHtml(t('fmtgroup.' + g))}</legend>${
+    FORMATS.filter((f) => f.group === g).map((f) => `
     <label class="check fmt-check"><input type="checkbox" data-fmt="${f.id}" />
       <span class="swatch" style="background:${FORMAT_COLOR[f.id]}"></span>${escapeHtml(fmtName(f))}
-      <span class="muted small" title="${escapeHtml(t('setup.pTitle', { p: f.p, d: fullDigits(f).toFixed(1) }))}">p=${f.p}</span></label>`).join('');
+      ${fmtMeta(f)}</label>`).join('')
+  }</fieldset>`).join('');
   $('mode').innerHTML = ROUNDING_MODES.map((m) => `<option value="${m.id}">${escapeHtml(t('mode.' + m.id) + (m.id === 'RNE' ? ' ' + t('mode.default') : ''))}</option>`).join('');
   $('steps-legend').innerHTML = badgeLegendHtml({ table: true });
 }
@@ -331,6 +357,11 @@ function renderModeHint() {
   $('mode-hint').textContent = t('modeHint.' + state.mode);
 }
 
+/** Concise 1-sentence hint for the active fixed-point overflow mode. */
+function renderOverflowHint() {
+  $('fixed-overflow-hint').textContent = t('setup.fixedOvfHint.' + (state.overflowMode === 'wrap' ? 'wrap' : 'sat'));
+}
+
 function syncInputs() {
   $('example').value = state.example || '';
   renderExampleText();
@@ -338,6 +369,10 @@ function syncInputs() {
   $('program').value = state.program;
   $('mode').value = state.mode;
   renderModeHint();
+  const ovf = state.overflowMode === 'wrap' ? 'wrap' : 'sat';
+  $('ovf-sat').checked = ovf === 'sat';
+  $('ovf-wrap').checked = ovf === 'wrap';
+  renderOverflowHint();
   $('show-const').checked = state.showConst;
   $('chart-measure').value = state.chartMeasure || 'digits';
   $('ref-digits').value = state.refDigits ?? 60;
@@ -378,7 +413,8 @@ function renderVars() {
 // ---------------------------------------------------------------------------
 
 function selectedFormats() {
-  const list = FORMATS.filter((f) => state.formats[f.id]);
+  const ovf = state.overflowMode === 'wrap' ? 'wrap' : 'sat';
+  const list = FORMATS.filter((f) => state.formats[f.id]).map((f) => withOverflowMode(f, ovf));
   if (state.custom.on) {
     const p = Math.min(100000, Math.max(1, state.custom.p));
     const e = state.custom.unbounded ? null : Math.min(30, Math.max(2, state.custom.expBits));
@@ -417,7 +453,10 @@ function run(resetSel = false, clearHash = true) {
   rewritePanel?.invalidate();
   try {
     const t0 = performance.now();
-    result = evaluate({ variables: state.variables, program: state.program, formats: selectedFormats(), mode: state.mode, refDigits: state.refDigits ?? 60 });
+    result = evaluate({
+      variables: state.variables, program: state.program, formats: selectedFormats(),
+      mode: state.mode, overflowMode: state.overflowMode === 'wrap' ? 'wrap' : 'sat', refDigits: state.refDigits ?? 60,
+    });
     result.ms = performance.now() - t0;
     result.readNames = readNames(state.program);
     lastError = null;
@@ -645,6 +684,8 @@ function renderDiagnosis() {
             value: shortestDecimal(root.fmt[f.id].value, f),
             apart: dg.apart === 1 ? t('diag.apartOne') : t('diag.apartMany', { k: dg.apart }),
           }));
+        } else if (f.fixed && dg.origin && dg.origin.fmt[f.id].flags.overflow) {
+          losses = ' ' + stepLink('diag.origin', dg.origin);
         } else {
           losses = ' ' + escapeHtml(t('diag.onlyRounding'));
         }
@@ -905,7 +946,7 @@ sweepPanel = createSweepPanel($('view-sweep'), {
 rewritePanel = createRewritePanel($('view-rewrite'), {
   state: () => state.rewrite,
   save: saveState,
-  config: () => ({ variables: state.variables, program: state.program, mode: state.mode, refDigits: state.refDigits ?? 60 }),
+  config: () => ({ variables: state.variables, program: state.program, mode: state.mode, overflowMode: state.overflowMode === 'wrap' ? 'wrap' : 'sat', refDigits: state.refDigits ?? 60 }),
   formats: selectedFormats,
   useProgram: (program) => {
     state.program = program;

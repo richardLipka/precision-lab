@@ -23,7 +23,9 @@ operaci po operaci, a ukáže, kde a proč se výsledky rozcházejí.
   znamená p a exponent a proč skutečné počítače mohou vypsat jiné výsledky (mezivýsledky x87 v 80 bitech,
   překladač sloučí a·b + c do fma, `-ffast-math`).
 * **Formáty:** binary16 (poloviční), bfloat16, binary32 (float), binary64 (double), x87 80bitová
-  rozšířená, binary128 (čtyřnásobná) a vlastní formát s libovolnou přesností p (1 – 100 000 bitů)
+  rozšířená, binary128 (čtyřnásobná), IEEE 754 decimal64 (obě kódování BID i DPD jako samostatné formáty),
+  pevná řádová čárka Q16.16 (32bitová dvojková) a DEC(18,4) (64bitová desítková typu SQL MONEY) s přepínačem
+  saturace vs. přetečení ve dvojkovém doplňku a vlastní dvojkový formát s libovolnou přesností p (1 – 100 000 bitů)
   a omezeným nebo neomezeným exponentem. Pět zaokrouhlovacích režimů IEEE.
 * **Výsledky:** jeden řádek pro každou přiřazenou proměnnou (vyznačený je výsledek a mezivýsledky, které
   používají pozdější kroky) se skutečnou hodnotou a všemi formáty vedle sebe, takže dvojice variant,
@@ -109,9 +111,10 @@ zaokrouhlení dají jiný výsledek než jediné (x87 extended → double), vysv
 pojmenuje.
 
 ### Příklady
-25 vestavěných příkladů seřazených jako učební cesta v šesti skupinách: základy (reprezentace, celá čísla,
+27 vestavěných příkladů seřazených jako učební cesta v šesti skupinách: základy (reprezentace, celá čísla,
 speciální hodnoty), hromadění chyb zaokrouhlení, krácení a stabilní přepisy, zesílené chyby (nestabilní
-algoritmy a citlivé úlohy), podmíněnost a stabilita a hardware (fma, dvojí zaokrouhlení v x87). U každého příkladu je popsáno,
+algoritmy a citlivé úlohy), podmíněnost a stabilita a hardware (fma, dvojí zaokrouhlení v x87,
+decimal64 BID/DPD vs. dvojková a pevná řádová čárka). U každého příkladu je popsáno,
 co se děje, jaké si z něj vzít ponaučení a kam se v nástroji dívat (krok, graf, průchod přesnostmi nebo
 pohled Úpravy výrazu).
 

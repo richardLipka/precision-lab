@@ -96,6 +96,16 @@ export const BIB = {
     title: 'Radian reduction for trigonometric functions',
     venue: 'ACM SIGNUM Newsletter 18(1), 19–24', doi: '10.1145/1057600.1057602',
   },
+  cowlishaw2003: {
+    authors: 'M. F. Cowlishaw', year: 2003,
+    title: 'Decimal floating-point: algorism for computers',
+    venue: 'Proceedings of the 16th IEEE Symposium on Computer Arithmetic (ARITH-16), 104–111', doi: '10.1109/ARITH.2003.1207666',
+  },
+  tr18037: {
+    authors: 'ISO/IEC', year: 2008,
+    title: 'Programming languages — C — Extensions to support embedded processors (ISO/IEC TR 18037:2008)',
+    venue: 'ISO/IEC, Geneva', url: 'https://www.iso.org/standard/51126.html',
+  },
 };
 
 const n = (en, cs) => ({ en, cs });
@@ -151,6 +161,13 @@ export const EXAMPLE_REFS = {
     { id: 'goldberg1991', role: 'analysis', note: n('error bound of the Kahan summation formula', 'odhad chyby Kahanova sčítání') },
   ],
   sinBig: [{ id: 'payne1983', role: 'origin', note: n('exact argument reduction for huge arguments', 'přesná redukce argumentu pro obrovské argumenty') }],
+  decimalVsBinary: [
+    { id: 'ieee754', role: 'background', note: n('decimal64 BID and DPD interchange formats', 'formáty decimal64 v kódování BID a DPD') },
+    { id: 'cowlishaw2003', role: 'origin', note: n('decimal floating-point arithmetic and DPD encoding', 'desítková aritmetika v pohyblivé řádové čárce a kódování DPD') },
+  ],
+  fixedOverflow: [
+    { id: 'tr18037', role: 'background', note: n('fixed-point types, saturation and wraparound overflow', 'typy pevné řádové čárky, saturace a přetečení modulo 2ⁿ') },
+  ],
 };
 
 export function refLink(entry) {

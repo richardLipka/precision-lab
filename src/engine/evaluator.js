@@ -14,7 +14,8 @@ import { EngineError } from './messages.js';
 import {
   parseLiteral, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactAbs, exactFma, exact, ZERO, ONE, Fraction, log10Abs,
 } from './rational.js';
-import { fromExact, fpOp, CASTS, orderSatisfies } from './ieee.js';
+import { fromExact, fpOp, CASTS, orderSatisfies, withOverflowMode } from './ieee.js';
+import { fullDigits } from './metrics.js';
 import { setRealDigits, realDigits, realOp, realNeg, realAbs, exactFunction, exactPi, FUNCTION_NAMES, limitSize, fracToDec, decCtx } from './real.js';
 import { fpFunction, fpPi } from './fpfunc.js';
 
@@ -119,8 +120,9 @@ export function exactOrder(a, b) {
  * @param {number} [cfg.refDigits] decimal digits of the reference for irrational values
  *   (raised automatically to at least the widest format + 25 digits)
  */
-export function evaluate({ variables = [], program = '', formats, mode = 'RNE', maxSteps = 20000, refDigits = 60, exactCache = null }) {
-  const widest = Math.max(0, ...formats.map((f) => Math.ceil(f.p * Math.log10(2))));
+export function evaluate({ variables = [], program = '', formats, mode = 'RNE', overflowMode = 'sat', maxSteps = 20000, refDigits = 60, exactCache = null }) {
+  const activeFormats = formats.map((f) => withOverflowMode(f, overflowMode));
+  const widest = Math.max(0, ...activeFormats.map((f) => Math.ceil(fullDigits(f))));
   setRealDigits(Math.max(refDigits, widest + 25));
   const steps = [];
   const env = new Map();
@@ -141,7 +143,7 @@ export function evaluate({ variables = [], program = '', formats, mode = 'RNE', 
 
   function convertStep(kind, text, value, extra = {}) {
     const fmt = {};
-    for (const f of formats) {
+    for (const f of activeFormats) {
       if (extra.constant === 'pi') {
         fmt[f.id] = fpPi(f, mode);
         continue;
@@ -153,7 +155,7 @@ export function evaluate({ variables = [], program = '', formats, mode = 'RNE', 
         round: value.kind === 'finite' ? round : null,
         flags: {
           inexact: !!round.inexact, overflow: !!round.overflow, underflow: !!round.underflow,
-          divByZero: false, invalid: false,
+          divByZero: false, invalid: !!round.invalid,
         },
       };
     }
@@ -191,7 +193,7 @@ export function evaluate({ variables = [], program = '', formats, mode = 'RNE', 
     }
     if (exactCache) exactCache[steps.length] = ex;
     const fmt = {};
-    for (const f of formats) {
+    for (const f of activeFormats) {
       const args = ops.map((s) => s.fmt[f.id].value);
       fmt[f.id] = FN.has(op) ? fpFunction(op, args, f, mode) : fpOp(op, args, f, mode);
     }
@@ -302,8 +304,9 @@ export function evaluate({ variables = [], program = '', formats, mode = 'RNE', 
     result: resultStep,
     env: Object.fromEntries(env),
     nodeSteps,
-    formats,
+    formats: activeFormats,
     mode,
+    overflowMode: overflowMode === 'wrap' ? 'wrap' : 'sat',
     refDigits: realDigits(),
   };
 }

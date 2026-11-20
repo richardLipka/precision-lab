@@ -90,9 +90,22 @@ export function scalePow2(r, p) {
  * Falls back to standard Fraction.sub when `a` is not dyadic.
  */
 export function dyadicSub(a, x) {
-  if ((a.d & (a.d - 1n)) !== 0n) return a.sub(x);
   if (a.n === 0n) return x.neg();
   if (x.n === 0n) return a;
+  if ((a.d & (a.d - 1n)) !== 0n) {
+    if (bitLength(a.d) <= 2000 && bitLength(x.d) > 256) {
+      const gd = a.d > 1n ? bigGcd(a.d, x.d % a.d) : 1n;
+      const ad1 = gd === 1n ? a.d : a.d / gd;
+      const xd1 = gd === 1n ? x.d : x.d / gd;
+      const N = a.s * a.n * xd1 - x.s * x.n * ad1;
+      if (N === 0n) return ZERO;
+      const s = N < 0n ? -1n : 1n;
+      const M = N < 0n ? -N : N;
+      const ge = a.d > 1n ? bigGcd(a.d, M % a.d) : 1n;
+      return rawFraction(s, ge === 1n ? M : M / ge, (ge === 1n ? a.d : a.d / ge) * xd1);
+    }
+    return a.sub(x);
+  }
   const k = bitLength(a.d) - 1;
   const t = trailingZeros(x.d);
   const m = Math.min(k, t);
@@ -106,17 +119,34 @@ export function dyadicSub(a, x) {
 }
 
 /**
- * Exact reduced `{ err: a − x, rel: |a − x| / |x| }` when `a` is dyadic and
- * `x` is any reduced fraction. Since gcd(M, x.n) = gcd(a.n, x.n) where a.n is
- * a short FP significand, the relative error also avoids wide BigInt gcd.
+ * Exact reduced `{ err: a − x, rel: |a − x| / |x| }` avoiding O(bits²) BigInt gcd
+ * both when `a` is dyadic and when `a` has a compact numerator/denominator (e.g. decimal64)
+ * compared against a wide exact rational `x`.
  */
 export function dyadicDiff(a, x) {
-  if ((a.d & (a.d - 1n)) !== 0n) {
-    const err = a.sub(x);
-    return { err, rel: x.n === 0n ? null : err.abs().div(x.abs()) };
-  }
   if (a.n === 0n) return { err: x.neg(), rel: x.n === 0n ? ZERO : ONE };
   if (x.n === 0n) return { err: a, rel: null };
+  if ((a.d & (a.d - 1n)) !== 0n) {
+    if (bitLength(a.d) <= 2000 && bitLength(a.n) <= 2000 && bitLength(x.d) > 256) {
+      const gd = a.d > 1n ? bigGcd(a.d, x.d % a.d) : 1n;
+      const ad1 = gd === 1n ? a.d : a.d / gd;
+      const xd1 = gd === 1n ? x.d : x.d / gd;
+      const N = a.s * a.n * xd1 - x.s * x.n * ad1;
+      if (N === 0n) return { err: ZERO, rel: ZERO };
+      const s = N < 0n ? -1n : 1n;
+      const M = N < 0n ? -N : N;
+      const ge = a.d > 1n ? bigGcd(a.d, M % a.d) : 1n;
+      const err = rawFraction(s, ge === 1n ? M : M / ge, (ge === 1n ? a.d : a.d / ge) * xd1);
+      const gn = a.n > 1n ? bigGcd(a.n, x.n % a.n) : 1n;
+      const M1 = gn === 1n ? M : M / gn;
+      const xn1 = gn === 1n ? x.n : x.n / gn;
+      const ga = ad1 > 1n ? bigGcd(ad1, M1 % ad1) : 1n;
+      const rel = rawFraction(1n, ga === 1n ? M1 : M1 / ga, xn1 * (ga === 1n ? ad1 : ad1 / ga));
+      return { err, rel };
+    }
+    const err = a.sub(x);
+    return { err, rel: err.abs().div(x.abs()) };
+  }
   const k = bitLength(a.d) - 1;
   const t = trailingZeros(x.d);
   const m = Math.min(k, t);
@@ -268,7 +298,9 @@ export function parseLiteral(text) {
     let mant = BigInt((ip + fp) || '0');
     if (sign === '-') mant = -mant;
     const r = e >= 0 ? new Fraction(mant * pow10(e), 1n) : new Fraction(mant, pow10(-e));
-    return exact.finite(r, sign === '-' && mant === 0n);
+    const out = exact.finite(r, sign === '-' && mant === 0n);
+    out.decScale = e;
+    return out;
   }
   return null;
 }

@@ -16,9 +16,9 @@
 // first-order error bound cannot explain it, and texts about rounding name the
 // active rounding mode instead of assuming round-to-nearest.
 
-import { bitLength, floorLog2, fmtFrac, log10Abs, dyadic, dyadicSub, toSciParts } from './rational.js';
+import { bitLength, floorLog2, floorLog10, fmtFrac, log10Abs, dyadic, dyadicSub, frac, pow10, exactDecimal, toSciParts } from './rational.js';
 import {
-  fpToFraction, shortestDecimal, exactShort, roundFraction, fpOrder, fpEquals, fpNeg, isSubnormal, exponentOf, maxFinite, CASTS, FORMATS,
+  fpToFraction, shortestDecimal, exactShort, roundFraction, fpOrder, fpEquals, fpNeg, isSubnormal, exponentOf, maxFinite, minFinite, CASTS, FORMATS,
 } from './ieee.js';
 import { exactOrder } from './evaluator.js';
 import { COMPARISONS } from './parser.js';
@@ -100,7 +100,23 @@ export function significantBits(r) {
   return bitLength(r.n) - tz;
 }
 
-/** Prime factors (other than 2) of the denominator, for the explanation. */
+/** Number of significant base-10 digits of a rational (Infinity if its decimal expansion is periodic). */
+export function significantDecimalDigits(r) {
+  if (r.n === 0n) return 0;
+  let d = r.d;
+  let a = 0;
+  let b = 0;
+  while ((d & 1n) === 0n) { d >>= 1n; a++; }
+  while (d % 5n === 0n) { d /= 5n; b++; }
+  if (d !== 1n) return Infinity;
+  let n = r.n;
+  if (a > b) n *= 5n ** BigInt(a - b);
+  else if (b > a) n <<= BigInt(b - a);
+  while (n % 10n === 0n) n /= 10n;
+  return n.toString().length;
+}
+
+/** Prime factors (other than 2) of the denominator, for binary explanations. */
 export function oddDenominatorFactors(r) {
   let d = r.d;
   while ((d & 1n) === 0n) d >>= 1n;
@@ -115,11 +131,37 @@ export function oddDenominatorFactors(r) {
   return out;
 }
 
-/** The odd denominator factors as a translatable phrase ("the factor 5", "a prime factor above 200"). */
-function factorsParam(r) {
-  const f = oddDenominatorFactors(r);
+/** Prime factors other than 2 and 5 of the denominator, for base-10 explanations. */
+export function nonDecimalFactors(r) {
+  let d = r.d;
+  while ((d & 1n) === 0n) d >>= 1n;
+  while (d % 5n === 0n) d /= 5n;
+  const out = [];
+  for (let p = 3n; p < 200n && d > 1n; p += 2n) {
+    if (p === 5n) continue;
+    if (d % p === 0n) {
+      out.push(p.toString());
+      while (d % p === 0n) d /= p;
+    }
+  }
+  if (d > 1n) out.push('…');
+  return out;
+}
+
+/** The non-radix denominator factors as a translatable phrase. */
+function factorsParam(r, radix = 2) {
+  const f = radix === 10 ? nonDecimalFactors(r) : oddDenominatorFactors(r);
   if (f.length === 1 && f[0] === '…') return key('factor.large');
   return key(f.length === 1 ? 'factor.one' : 'factor.many', { list: f.join(', ') });
+}
+
+/** Base-10 expansion with repeating period in parentheses, e.g. 1/3 → 0.(3)₁₀. */
+export function decimalText(r, maxDigits = 40) {
+  if (r.n === 0n) return '0₁₀';
+  const E = floorLog10(r.abs());
+  if (E >= -6 && E <= 12) return `${exactDecimal(r, maxDigits).text}₁₀`;
+  const scaled = E >= 0 ? r.div(frac(pow10(E), 1n)) : r.mul(frac(pow10(-E), 1n));
+  return `${exactDecimal(scaled, maxDigits).text}₁₀ × 10${sup(E)}`;
 }
 
 /**
@@ -183,13 +225,25 @@ function withFraction(src, r) {
  * sends to the even neighbour 0); under directed rounding because it is below
  * the smallest subnormal and the mode rounds toward 0.
  */
+function isTie(R, fmt) {
+  return fmt.radix === 10 ? (R.guard === 5 && !R.sticky) : (R.guard === 1 && !R.sticky);
+}
+
 function flushWhy(R, mode, fmt) {
-  const min = num(dyadic(1n, fmt.emin - fmt.p + 1));
-  if (mode === 'RNE' || mode === 'RNA') return key(R.guard === 1 && !R.sticky ? 'flush.tie' : 'flush.half', { min });
+  if (fmt.fixed) {
+    const min = num(fmt.step);
+    if (mode === 'RNE' || mode === 'RNA') return key(isTie(R, fmt) ? 'fxp.flushTie' : 'fxp.flushHalf', { min });
+    return key('fxp.flushDirected', { min, mode: key('mode.' + mode) });
+  }
+  const min = fmt.family === 'decfloat' ? num(frac(1n, pow10(-fmt.qmin))) : num(dyadic(1n, fmt.emin - fmt.p + 1));
+  if (mode === 'RNE' || mode === 'RNA') return key(isTie(R, fmt) ? 'flush.tie' : 'flush.half', { min });
   return key('flush.directed', { min, mode: key('mode.' + mode) });
 }
 
 function subnormalParams(v, fmt) {
+  if (fmt.family === 'decfloat') {
+    return { minNormal: num(frac(1n, pow10(-fmt.emin))), avail: v.m.toString().length, q: num(frac(1n, pow10(-fmt.qmin))), p: fmt.p };
+  }
   return { minNormal: num(dyadic(1n, fmt.emin)), avail: bitLength(v.m), q: num(dyadic(1n, fmt.emin - fmt.p + 1)), p: fmt.p };
 }
 
@@ -402,47 +456,88 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
   if (CMP.has(step.op)) return explainComparison();
   if (CASTS[step.op] && isNum(steps[step.operands[0]].fmt[fmt.id].value)) return explainCast();
 
-  // ---- Special values -----------------------------------------------------
-  if (res.flags.invalid) {
-    push('sp.invalid', { what: res.exactOp.reason || '' }, 'bad');
-    setCause('invalid', {}, 'bad');
-  }
-  if (res.flags.divByZero) {
-    if (X.kind === 'finite') {
-      // The zero is 0 only in this format (underflow or cancellation to 0 earlier): the true value is finite.
-      push('sp.divzeroFalse', {}, 'bad');
-      setCause('zeroDivisor', {}, 'bad');
+  // ---- Fixed-point trap / non-finite handling (no ∞ or NaN in hardware) ----
+  const isDec = fmt.family === 'decfloat';
+  const isFix = !!fmt.fixed;
+  const fxpOverflow = !!(isFix && R && R.overflow);
+  const pushFxpOverflow = () => {
+    const min = shortestDecimal(minFinite(fmt), fmt);
+    const max = shortestDecimal(maxFinite(fmt), fmt);
+    const result = shortestDecimal(v, fmt);
+    if (R.overflowKind === 'wrap') {
+      push('fxp.wrap', { min, max, bits: fmt.totalBits, result }, 'bad');
+      setCause('wrap', {}, 'bad');
     } else {
-      push('sp.divzero', {}, 'bad');
-      setCause('divzero', {}, 'bad');
+      push('fxp.saturate', { min, max, result }, 'bad');
+      setCause('saturate', {}, 'bad');
     }
-  }
-  if (res.flags.overflow) {
-    push('sp.overflow', { max: exactShort({ kind: 'finite', r: fpToFraction(maxFinite(fmt)) }, 5), result: shortestDecimal(v, fmt) }, 'bad');
-    setCause('overflow', {}, 'bad');
-  }
-  if (!isNum(v) && X.kind === 'finite' && !res.flags.overflow && !res.flags.invalid && !res.flags.divByZero) {
-    push(v.kind === 'inf' ? 'sp.infInherited' : 'sp.nanInherited', {}, 'bad');
-    setCause(v.kind === 'inf' ? 'overflow' : 'invalid', {}, 'bad');
-  }
-  if (X.kind === 'nan' && !X.beyond && isNum(v)) {
-    push('sp.exactUndefined', {}, 'bad');
-    setCause('invalid', {}, 'bad');
-  }
-  if (!cause && !isNum(v) && step.kind === 'op') {
-    // ∞ or NaN that the true value shares: the fixed IEEE 754 rules apply, nothing is rounded.
-    // (A true value beyond the reference's range only stands in for a finite one: ref.beyond* says so.)
-    if (X.beyond) {
-      setCause('prop', {}, 'warn');
-    } else if (v.kind === 'nan') {
-      push('sp.nanPropagates', {}, 'warn');
-      setCause('invalid', {}, 'warn');
+  };
+
+  if (isFix && v.kind === 'nan') {
+    if (step.kind !== 'op') {
+      push('fxp.noSpecial', {}, 'bad');
+      setCause('invalid', {}, 'bad');
+      return { cause, items, cmp };
+    }
+    if (res.flags.divByZero) {
+      if (X.kind === 'finite') {
+        push('fxp.divZeroFalse', {}, 'bad');
+        setCause('zeroDivisor', {}, 'bad');
+      } else {
+        push('fxp.divZero', {}, 'bad');
+        setCause('divzero', {}, 'bad');
+      }
+    } else if (res.flags.invalid) {
+      push('fxp.invalid', { what: res.exactOp.reason || '' }, 'bad');
+      setCause('invalid', {}, 'bad');
     } else {
-      push('sp.infPropagates', {}, 'info');
-      setCause('exact', {}, 'good');
+      push('fxp.trapPropagates', {}, 'bad');
+      setCause('invalid', {}, 'bad');
     }
+    return { cause, items, cmp };
   }
-  if (cause && !isNum(v)) return { cause, items, cmp };
+
+  // ---- Special values (floating-point) ------------------------------------
+  if (!isFix) {
+    if (res.flags.invalid) {
+      push('sp.invalid', { what: res.exactOp.reason || '' }, 'bad');
+      setCause('invalid', {}, 'bad');
+    }
+    if (res.flags.divByZero) {
+      if (X.kind === 'finite') {
+        // The zero is 0 only in this format (underflow or cancellation to 0 earlier): the true value is finite.
+        push('sp.divzeroFalse', {}, 'bad');
+        setCause('zeroDivisor', {}, 'bad');
+      } else {
+        push('sp.divzero', {}, 'bad');
+        setCause('divzero', {}, 'bad');
+      }
+    }
+    if (res.flags.overflow) {
+      push('sp.overflow', { max: exactShort({ kind: 'finite', r: fpToFraction(maxFinite(fmt)) }, 5), result: shortestDecimal(v, fmt) }, 'bad');
+      setCause('overflow', {}, 'bad');
+    }
+    if (!isNum(v) && X.kind === 'finite' && !res.flags.overflow && !res.flags.invalid && !res.flags.divByZero) {
+      push(v.kind === 'inf' ? 'sp.infInherited' : 'sp.nanInherited', {}, 'bad');
+      setCause(v.kind === 'inf' ? 'overflow' : 'invalid', {}, 'bad');
+    }
+    if (X.kind === 'nan' && !X.beyond && isNum(v)) {
+      push('sp.exactUndefined', {}, 'bad');
+      setCause('invalid', {}, 'bad');
+    }
+    if (!cause && !isNum(v) && step.kind === 'op') {
+      if (X.beyond) {
+        setCause('prop', {}, 'warn');
+      } else if (v.kind === 'nan') {
+        push('sp.nanPropagates', {}, 'warn');
+        setCause('invalid', {}, 'warn');
+      } else {
+        push('sp.infPropagates', {}, 'info');
+        setCause('exact', {}, 'good');
+      }
+    }
+    if (cause && !isNum(v)) return { cause, items, cmp };
+  }
 
   // ---- Conversion of an input or literal ---------------------------------
   if (step.kind !== 'op') {
@@ -451,6 +546,83 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
       return { cause: cause || { code: 'exact', params: {}, tone: 'good' }, items, cmp };
     }
     const src = step.source ?? step.text;
+    if (isFix) {
+      if (!R || !R.inexact) {
+        if (X.r.n === 0n) push('conv.zero', { value: src }, 'good');
+        else push('fxp.convExact', { value: src, step: num(fmt.step) }, 'good');
+        setCause('exact', {}, 'good');
+        return { cause, items, cmp };
+      }
+      if (fxpOverflow) {
+        pushFxpOverflow();
+        finalVerdict();
+        return { cause, items, cmp };
+      }
+      if (R.tiny && v.kind === 'zero') {
+        push('fxp.flushZero', { step: num(fmt.step), why: flushWhy(R, mode, fmt) }, 'bad');
+        setCause('underflow', {}, 'warn');
+        finalVerdict();
+        return { cause, items, cmp };
+      }
+      const sigCount = fmt.radix === 10 ? significantDecimalDigits(X.r) : significantBits(X.r);
+      if (X.approx) {
+        push('fxp.convIrrational', { value: src, step: num(fmt.step) }, 'warn');
+      } else if (sigCount === Infinity) {
+        if (fmt.radix === 10) {
+          const dec = decimalText(X.r.abs());
+          push('fxp.convPeriodicDec', {
+            value: withFraction(src, X.r), dec,
+            note: key(dec.includes('(') ? 'expansion.periodDec' : 'expansion.longDec'),
+            factors: factorsParam(X.r, 10), scale: fmt.scaleDigits,
+          }, 'warn');
+        } else {
+          const bin = binaryText(X.r.abs());
+          push('fxp.convPeriodicBin', {
+            value: withFraction(src, X.r), bin,
+            note: key(bin.includes('(') ? 'expansion.period' : 'expansion.long'),
+            factors: factorsParam(X.r, 2), frac: fmt.fracBits,
+          }, 'warn');
+        }
+      } else {
+        push('fxp.convTooFine', { value: src, step: num(fmt.step) }, 'warn');
+      }
+      roundingItems(res, fmt, mode, push);
+      setCause('repr', {}, 'warn');
+      finalVerdict();
+      return { cause, items, cmp };
+    }
+    if (isDec) {
+      const digits = significantDecimalDigits(X.r);
+      if (!R || !R.inexact) {
+        if (X.r.n === 0n) push(v.kind === 'zero' && v.sign ? 'conv.negZero' : 'conv.zero', { value: src }, 'good');
+        else push('conv.exactDec', { value: src, digits, p: fmt.p, coef: v.m.toString(), q: v.q }, 'good');
+        setCause('exact', {}, 'good');
+      } else {
+        if (X.approx) {
+          push('conv.irrationalDec', { value: src, p: fmt.p }, 'warn');
+        } else if (digits === Infinity) {
+          const dec = decimalText(X.r.abs());
+          push('conv.periodicDec', {
+            value: withFraction(src, X.r), dec,
+            note: key(dec.includes('(') ? 'expansion.periodDec' : 'expansion.longDec'),
+            factors: factorsParam(X.r, 10),
+            keep: R.tiny ? key('conv.keepTiny') : key('conv.keepDec', { p: fmt.p }),
+          }, 'warn');
+        } else if (!R.tiny && digits > fmt.p) {
+          push('conv.tooManyDigits', { value: src, digits, p: fmt.p, cut: digits - fmt.p }, 'warn');
+        }
+        if (R.tiny) {
+          if (v.kind === 'zero') push('conv.flushZero', { why: flushWhy(R, mode, fmt) }, 'bad');
+          else if (isSubnormal(v, fmt)) push('conv.subnormalDec', subnormalParams(v, fmt), 'warn');
+          else push('conv.roundToMinNormalDec', { minNormal: num(frac(1n, pow10(-fmt.emin))), p: fmt.p }, 'warn');
+          setCause('underflow', {}, 'warn');
+        }
+        roundingItems(res, fmt, mode, push);
+        setCause('repr', {}, 'warn');
+        finalVerdict();
+      }
+      return { cause, items, cmp };
+    }
     const bits = significantBits(X.r);
     if (!R || !R.inexact) {
       if (X.r.n === 0n) push(v.kind === 'zero' && v.sign ? 'conv.negZero' : 'conv.zero', { value: src }, 'good');
@@ -465,11 +637,10 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
           value: withFraction(src, X.r),
           bin,
           note: key(bin.includes('(') ? 'expansion.period' : 'expansion.long'),
-          factors: factorsParam(X.r),
+          factors: factorsParam(X.r, 2),
           keep: R.tiny ? key('conv.keepTiny') : key('conv.keep', { p: fmt.p }),
         }, 'warn');
       } else if (!R.tiny && bits > fmt.p) {
-        // In the subnormal range the reason is the fixed spacing, not the bit count (see conv.subnormal).
         push('conv.tooManyBits', { value: src, bits, p: fmt.p, cut: bits - fmt.p }, 'warn');
       }
       if (R.tiny) {
@@ -532,7 +703,9 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
         push('fn.condDamp', params, 'good');
       }
     }
-    if (res.exactOp.approx) {
+    if (isFix && !fxpOverflow && !flushedZero) {
+      push('fxp.fnIdeal', { fn, step: num(fmt.step) }, 'info');
+    } else if (res.exactOp.approx && !fxpOverflow && !flushedZero) {
       const code = fn === 'sqrt' ? 'fn.sqrt' : fn === 'pow' ? 'fn.pow' : fn === 'log10' ? 'fn.log10' : 'fn.transcendental';
       push(code, { fn, r0: fn === 'ln' ? '1' : '0' }, 'info');
       if (res.uncertain) push('fn.uncertain', {}, 'warn');
@@ -542,11 +715,26 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
   }
 
   if (step.op === 'neg' || step.op === 'abs') {
+    if (fxpOverflow) {
+      push('fxp.negMinOverflow', { min: shortestDecimal(minFinite(fmt), fmt) }, 'bad');
+      pushFxpOverflow();
+      if (inherited) push('prop.operands', { list: describeOperands(ops, opDigits) }, 'warn');
+      finalVerdict();
+      return { cause, items, cmp };
+    }
     push('op.signExact', {}, 'good');
     if (inherited) {
       push('prop.operands', { list: describeOperands(ops, opDigits) }, 'warn');
       setCause('prop', {}, 'warn');
     } else setCause('exact', {}, 'good');
+    finalVerdict();
+    return { cause, items, cmp };
+  }
+
+  // Fixed-point overflow takes priority over all per-op rounding/propagation noise.
+  if (fxpOverflow) {
+    pushFxpOverflow();
+    if (inherited) push('prop.operands', { list: describeOperands(ops, opDigits) }, 'warn');
     finalVerdict();
     return { cause, items, cmp };
   }
@@ -562,17 +750,12 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     if (effSub && S.n !== 0n) {
       const kappa = A.add(B).div(S);
       const lk = log10Abs(kappa);
-      // κ ≥ 10^CANCEL_MIN_LOG10_KAPPA > 3 means b/2 ≤ a ≤ 2b, so by the Sterbenz lemma
-      // a − b is exact here: this branch never rounds (newRounding is false), and
-      // the only harm a cancellation can do is to amplify the operands' errors.
       if (lk >= CANCEL_MIN_LOG10_KAPPA) {
         const kappaText = num(kappa, 2);
         if (inherited && !cancelled) {
           const relIn = Math.max(...opCmp.map((c) => (c.status === 'approx' && c.rel ? Math.pow(10, log10Abs(c.rel)) : 0)));
           const relProp = X.kind === 'finite' && X.r.n !== 0n ? exactOp.sub(X.r).abs().div(X.r.abs()) : null;
           const catastrophic = lk >= CATASTROPHIC_LOG10_KAPPA;
-          // log10 κ is only a prediction; the measured loss is the same figure the
-          // verdict and the diagnosis show for this step.
           push(catastrophic ? 'op.cancelAmplify' : 'op.cancelMild', {
             kappa: kappaText,
             est: lk.toFixed(1),
@@ -594,44 +777,61 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
         setCause('cancel', { kappa: '∞' }, 'bad');
         pushSource();
       } else {
-        // Equal stored operands whose true values are equal too (or exact operands).
         push('op.exactZero', {}, 'good');
       }
     }
-    // Absorption of the smaller operand: the sum rounds back to the larger one.
-    if (a.n !== 0n && b.n !== 0n) {
+    // Absorption / exponent alignment apply only to floating-point formats (fixed-point shares a constant grid).
+    if (!isFix && a.n !== 0n && b.n !== 0n) {
       const bigIdx = A.compare(B) >= 0 ? 0 : 1;
       const big = opVals[bigIdx];
       const bigEff = step.op === '-' && bigIdx === 1 ? fpNeg(big) : big;
       const smallR = bigIdx === 0 ? B : A;
-      // Half the gap between the two neighbours of the exact sum: the step's ulp
-      // (the ulp of `big` unless the sum crosses a power of two).
       const ulp = ulpAround(exactOp, fmt);
       const half = ulp.div(2);
-      const eDiff = exponentOf(big) - floorLog2(smallR);
+      const eDiff = isDec ? (exponentOf(big) - floorLog10(smallR)) : (exponentOf(big) - floorLog2(smallR));
       const backToBig = v.kind === bigEff.kind && fpToFraction(v).equals(fpToFraction(bigEff));
       if (backToBig && smallR.compare(ulp) < 0) {
         const p = { small: shortestDecimal(opVals[1 - bigIdx], fmt), big: shortestDecimal(bigEff, fmt), half: num(half), ulp: num(ulp), sn: label(1 - bigIdx), mode: key('mode.' + mode) };
         const rel = smallR.compare(half);
-        // below half: any round-to-nearest gives big; exactly half: a tie; above half: only a directed mode
         push(rel < 0 ? 'op.absorbTotal' : rel === 0 ? 'op.absorbTie' : 'op.absorbDirected', p, 'bad');
         absorbed = true;
         setCause('absorb', {}, 'bad');
       } else if (newRounding && eDiff > 0) {
-        push('op.alignShift', { d: eDiff, sn: label(1 - bigIdx) }, 'info');
+        push(isDec ? 'op.alignShiftDec' : 'op.alignShift', { d: eDiff, sn: label(1 - bigIdx) }, 'info');
       }
     }
-    if (newRounding && !R.tiny && !absorbed && significantBits(exactOp) > fmt.p) push('op.addBits', { bits: fmtBits(significantBits(exactOp)), p: fmt.p }, 'info');
+    if (!isFix && newRounding && !R.tiny && !absorbed) {
+      const sig = isDec ? significantDecimalDigits(exactOp) : significantBits(exactOp);
+      if (sig > fmt.p) push(isDec ? 'op.addDigits' : 'op.addBits', isDec ? { digits: fmtBits(sig), p: fmt.p } : { bits: fmtBits(sig), p: fmt.p }, 'info');
+    }
   } else if (step.op === '*' && exactOp) {
-    const bits = significantBits(exactOp);
-    if (newRounding && !R.tiny && bits > fmt.p) push('op.mulBits', { bits: fmtBits(bits), p: fmt.p, p2: 2 * fmt.p }, 'info');
+    if (isFix) {
+      if (newRounding && !flushedZero) push('fxp.mulRound', { step: num(fmt.step) }, 'info');
+    } else if (isDec) {
+      const digits = significantDecimalDigits(exactOp);
+      if (newRounding && !R.tiny && digits > fmt.p) push('op.mulDigits', { digits: fmtBits(digits), p: fmt.p, p2: 2 * fmt.p }, 'info');
+    } else {
+      const bits = significantBits(exactOp);
+      if (newRounding && !R.tiny && bits > fmt.p) push('op.mulBits', { bits: fmtBits(bits), p: fmt.p, p2: 2 * fmt.p }, 'info');
+    }
     if (inherited && !cancelled && !flushedZero) push('op.relMul', { list: relList(opCmp, ops) }, 'info');
   } else if (step.op === '/' && exactOp) {
-    const bits = significantBits(exactOp);
-    if (bits === Infinity) {
-      const bin = binaryText(exactOp.abs(), 40);
-      if (!flushedZero) push('op.divPeriodic', { bin, note: key(bin.includes('(') ? 'expansion.period' : 'expansion.long'), factors: factorsParam(exactOp) }, 'info');
-    } else if (newRounding && !R.tiny && bits > fmt.p) push('op.divBits', { bits, p: fmt.p }, 'info');
+    const sig = fmt.radix === 10 ? significantDecimalDigits(exactOp) : significantBits(exactOp);
+    if (sig === Infinity) {
+      if (!flushedZero) {
+        if (fmt.radix === 10) {
+          const dec = decimalText(exactOp.abs(), 40);
+          push(isFix ? 'fxp.divPeriodicDec' : 'op.divPeriodicDec', { dec, note: key(dec.includes('(') ? 'expansion.periodDec' : 'expansion.longDec'), factors: factorsParam(exactOp, 10) }, 'info');
+        } else {
+          const bin = binaryText(exactOp.abs(), 40);
+          push(isFix ? 'fxp.divPeriodicBin' : 'op.divPeriodic', { bin, note: key(bin.includes('(') ? 'expansion.period' : 'expansion.long'), factors: factorsParam(exactOp, 2) }, 'info');
+        }
+      }
+    } else if (isFix) {
+      if (newRounding && !flushedZero) push('fxp.divRound', { step: num(fmt.step) }, 'info');
+    } else if (newRounding && !R.tiny && sig > fmt.p) {
+      push(isDec ? 'op.divDigits' : 'op.divBits', isDec ? { digits: sig, p: fmt.p } : { bits: sig, p: fmt.p }, 'info');
+    }
     if (inherited && !cancelled && !flushedZero) push('op.relDiv', { list: relList(opCmp, ops) }, 'info');
   } else if (step.op === 'fma' && exactOp) {
     push(newRounding ? 'op.fmaOnce' : 'op.fmaExact', {}, 'good');
@@ -663,7 +863,7 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
         setCause('cancel', { kappa: '∞' }, 'bad');
         pushSource();
       }
-      if (ab.n !== 0n && c.n !== 0n && newRounding && !R.overflow) {
+      if (!isFix && ab.n !== 0n && c.n !== 0n && newRounding && !R.overflow) {
         const ulp = ulpAround(exactOp, fmt);
         const half = ulp.div(2);
         const vr = fpToFraction(v);
@@ -685,13 +885,17 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
   }
 
   if (!newRounding && !cancelReported && exactOp && exactOp.n !== 0n && !res.flags.overflow && !FUNCS.has(step.op) && step.op !== 'fma') {
-    push('op.exact', { bits: significantBits(exactOp), p: fmt.p }, 'good');
+    if (isFix && (step.op === '+' || step.op === '-')) push('fxp.addExact', { step: num(fmt.step) }, 'good');
+    else if (isFix) push('fxp.convExact', { value: shortestDecimal(v, fmt), step: num(fmt.step) }, 'good');
+    else if (isDec) push('op.exactDec', { digits: significantDecimalDigits(exactOp), p: fmt.p }, 'good');
+    else push('op.exact', { bits: significantBits(exactOp), p: fmt.p }, 'good');
   }
   if (newRounding) {
     if (R.tiny) {
-      if (v.kind === 'zero') push('op.flushZero', { why: flushWhy(R, mode, fmt) }, 'bad');
-      else if (isSubnormal(v, fmt)) push('op.subnormal', subnormalParams(v, fmt), 'warn');
-      else push('op.roundToMinNormal', { minNormal: num(dyadic(1n, fmt.emin)), p: fmt.p }, 'warn');
+      if (isFix) push('fxp.flushZero', { step: num(fmt.step), why: flushWhy(R, mode, fmt) }, 'bad');
+      else if (v.kind === 'zero') push('op.flushZero', { why: flushWhy(R, mode, fmt) }, 'bad');
+      else if (isSubnormal(v, fmt)) push(isDec ? 'op.subnormalDec' : 'op.subnormal', subnormalParams(v, fmt), 'warn');
+      else push(isDec ? 'op.roundToMinNormalDec' : 'op.roundToMinNormal', { minNormal: num(isDec ? frac(1n, pow10(-fmt.emin)) : dyadic(1n, fmt.emin)), p: fmt.p }, 'warn');
       setCause('underflow', {}, 'warn');
     }
     if (!flushedZero) roundingItems(res, fmt, mode, push);
@@ -817,11 +1021,18 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     const trueOrder = exactOrder(ops[0].exact, ops[1].exact).order;
     const storedOrder = fpOrder(vals[0], vals[1]);
     const equality = step.op === '==' || step.op === '!=';
-    const tolerance = () => push(equality ? 'cmp.tolerance' : 'cmp.toleranceOrder', { u: num(dyadic(1n, -fmt.p), 2) }, 'info');
-    // ∞ or NaN in this format although the true value is finite (an earlier overflow or invalid step).
+    const tolerance = () => {
+      if (fmt.fixed) {
+        push(equality ? 'cmp.toleranceFixed' : 'cmp.toleranceOrderFixed', { step: num(fmt.step) }, 'info');
+      } else {
+        const u = fmt.family === 'decfloat' ? num(frac(5n, pow10(fmt.p)), 2) : num(dyadic(1n, -fmt.p), 2);
+        push(equality ? 'cmp.tolerance' : 'cmp.toleranceOrder', { u }, 'info');
+      }
+    };
+    // ∞ or NaN/trap in this format although the true value is finite (an earlier overflow or invalid step).
     const special = vals.findIndex((x, i) => !isNum(x) && ops[i].exact.kind === 'finite');
     if (special >= 0) {
-      const sp = { id: ops[special].id, what: vals[special].kind === 'nan' ? 'NaN' : shortestDecimal(vals[special], fmt), got: yes(got), want: yes(want) };
+      const sp = { id: ops[special].id, what: vals[special].kind === 'nan' ? (fmt.fixed ? 'ERR' : 'NaN') : shortestDecimal(vals[special], fmt), got: yes(got), want: yes(want) };
       if (got === want) {
         push('cmp.rightSpecial', sp, 'warn');
         setCause('prop', {}, 'warn');
@@ -885,11 +1096,12 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     const T = FORMATS.find((f) => f.id === CASTS[step.op]);
     const { mid, r1, r2 } = res.cast;
     const target = key('fmt.name.' + T.id);
-    const sameFormat = T.p === fmt.p && T.emin === fmt.emin && T.emax === fmt.emax;
+    const sameFormat = T.family === fmt.family && T.radix === fmt.radix && T.p === fmt.p && T.emin === fmt.emin && T.emax === fmt.emax
+      && (!T.fixed || (T.scaleExp === fmt.scaleExp && T.totalBits === fmt.totalBits));
     let doubleRound = false;
     const leaf = op.kind !== 'op';
     let drItem = null;
-    if (!sameFormat && R.inexact && r1.inexact && !r1.overflow && ores.round?.inexact && ores.exactOp.kind === 'finite' && !ores.exactOp.beyond && !(leaf && ores.exactOp.approx)) {
+    if (!sameFormat && R && R.inexact && r1 && r1.inexact && !r1.overflow && ores.round?.inexact && ores.exactOp.kind === 'finite' && !ores.exactOp.beyond && !(leaf && ores.exactOp.approx)) {
       const once = roundFraction(ores.exactOp.r, T, mode).value;
       const prevP = ores.cast ? FORMATS.find((f) => f.id === ores.cast.target).p : fmt.p;
       const params = { id: op.id, p: prevP, pT: T.p, target, src: leaf ? (op.source ?? op.text) : '' };
@@ -902,27 +1114,39 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     }
     // Lead with the headline failure (double rounding or overflow) rather than generic cast mechanics.
     if (doubleRound) push(drItem.code, drItem.params, drItem.tone);
-    else if (r1.overflow) {
-      push('cast.overflow', { target, result: shortestDecimal(mid, T) }, 'bad');
-      setCause('overflow', {}, 'bad');
+    else if (r1?.overflow) {
+      if (T.fixed) {
+        if (r1.overflowKind === 'wrap') {
+          push('cast.fixedOverflowWrap', { target, bits: T.totalBits, result: shortestDecimal(mid, T) }, 'bad');
+          setCause('wrap', {}, 'bad');
+        } else {
+          push('cast.fixedOverflowSat', { target, result: shortestDecimal(mid, T) }, 'bad');
+          setCause('saturate', {}, 'bad');
+        }
+      } else {
+        push('cast.overflow', { target, result: shortestDecimal(mid, T) }, 'bad');
+        setCause('overflow', {}, 'bad');
+      }
+    } else if (T.family === 'decfloat') {
+      push('cast.whatDec', { fn: step.op, target, pT: T.p }, 'info');
+    } else if (T.fixed) {
+      push('cast.whatFixed', { fn: step.op, target, step: num(T.step) }, 'info');
     } else {
       push('cast.what', { fn: step.op, target, pT: T.p, p: fmt.p }, 'info');
     }
     if (sameFormat) {
       push('cast.same', {}, 'good');
-    } else if (!R.inexact) {
+    } else if (!R || !R.inexact) {
       push('cast.fits', { target }, 'good');
     } else {
-      if (!r1.overflow && r1.inexact) {
-        // Both sides in this column's shortest form when possible: the target's own shortest
-        // form can hide the change (0.1 in half → 0.1 in bfloat16 is really 0.09998 → 0.1001).
+      if (r1 && !r1.overflow && r1.inexact) {
         const kept = r2 && !r2.inexact;
         push('cast.round1', { target, from: shortestDecimal(ores.value, fmt), to: shortestDecimal(kept ? v : mid, kept ? fmt : T), dir: key('dir.' + r1.direction) }, 'warn');
         if (r1.tiny) setCause('underflow', {}, 'warn');
       }
       if (r2?.inexact) {
         push('cast.round2', { p: fmt.p, from: shortestDecimal(mid, T), to: shortestDecimal(v, fmt) }, r2.overflow ? 'bad' : 'warn');
-        if (r2.overflow) setCause('overflow', {}, 'bad');
+        if (r2.overflow) setCause(fmt.fixed ? (r2.overflowKind === 'wrap' ? 'wrap' : 'saturate') : 'overflow', {}, 'bad');
         else if (r2.tiny) setCause('underflow', {}, 'warn');
       }
       if (drItem && !doubleRound) push(drItem.code, drItem.params, drItem.tone);
@@ -1010,19 +1234,33 @@ function roundingItems(res, fmt, mode, push) {
   const R = res.round;
   const loc = localError(res, fmt);
   if (!R || !R.inexact || !loc || R.direction === 'exact') return;
-  if (R.guard === 1 && !R.sticky) {
-    push('round.tie', { mode: key('mode.' + mode), dir: key('dir.' + R.direction) }, 'info');
-  }
-  // ulp and u are glossed in the sentence itself: this is where the student meets them.
-  // The bound sentence must hold for the case at hand: the ulp bound fails for an
-  // overflow to the largest finite number (directed modes), and the relative
-  // bound (u, 2u) fails in the subnormal range, where an ulp is not small
-  // compared with the number.
   const nearest = mode === 'RNE' || mode === 'RNA';
-  const u = num(dyadic(1n, -fmt.p), 2);
+  if (fmt.fixed) {
+    if (isTie(R, fmt)) {
+      push(fmt.radix === 10 ? 'fxp.tieDec' : 'fxp.tieBin', { mode: key('mode.' + mode), dir: key('dir.' + R.direction) }, 'info');
+    }
+    const bound = nearest
+      ? key('fxp.boundNearest', { half: num(fmt.step.div(2)) })
+      : key('fxp.boundDirected', { step: num(fmt.step) });
+    push('fxp.roundAmount', {
+      dir: key('dir.' + R.direction),
+      err: num(loc.abs),
+      ulps: num(loc.ulps, 3),
+      step: num(fmt.step),
+      bound,
+    }, 'info');
+    return;
+  }
+  if (isTie(R, fmt)) {
+    push(fmt.family === 'decfloat' ? 'round.tieDec' : 'round.tie', { mode: key('mode.' + mode), dir: key('dir.' + R.direction) }, 'info');
+  }
+  const u = fmt.family === 'decfloat' ? num(frac(5n, pow10(fmt.p)), 2) : num(dyadic(1n, -fmt.p), 2);
   let bound;
   if (R.overflow || res.flags.overflow) bound = key('round.boundOverflow', { mode: key('mode.' + mode) });
-  else if (R.tiny) bound = key(nearest ? 'round.boundNearestTiny' : 'round.boundDirectedTiny', { u });
+  else if (fmt.family === 'decfloat') {
+    if (R.tiny) bound = key(nearest ? 'round.boundNearestTinyDec' : 'round.boundDirectedTinyDec', { u });
+    else bound = key(nearest ? 'round.boundNearestDec' : 'round.boundDirectedDec', { u });
+  } else if (R.tiny) bound = key(nearest ? 'round.boundNearestTiny' : 'round.boundDirectedTiny', { u });
   else bound = key(nearest ? 'round.boundNearest' : 'round.boundDirected', { u });
   push('round.amount', {
     dir: key('dir.' + R.direction),
@@ -1102,11 +1340,11 @@ export function diagnose(result, fmt, { root: rootId = result.result, shownOf: s
   let apart = null;
   let rounded = 0;
   if (final.status === 'approx' && root.exact.kind === 'finite') {
-    best = roundFraction(root.exact.r, fmt, result.mode || 'RNE').value;
+    const bestR = roundFraction(root.exact.r, fmt, result.mode || 'RNE');
+    best = bestR.value;
     const got = root.fmt[fmt.id].value;
-    bestPossible = isNum(best) && fpToFraction(best).equals(fpToFraction(got));
-    // Steps between the result and the best possible result, in representable numbers (1 = neighbours).
-    if (isNum(best) && isNum(got)) apart = stepsBetween(fpToFraction(best), fpToFraction(got), fmt);
+    bestPossible = !bestR.overflow && isNum(best) && fpToFraction(best).equals(fpToFraction(got));
+    if (!bestR.overflow && isNum(best) && isNum(got)) apart = stepsBetween(fpToFraction(best), fpToFraction(got), fmt);
     for (const id of needed) if (steps[id].fmt[fmt.id].round?.inexact) rounded++;
   }
   // An exact result built on rounded values: did their errors cancel by construction

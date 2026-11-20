@@ -23,8 +23,10 @@ operation by operation, and shows where and why the results drift apart.
   choice the page explains what p and the exponent mean, and why real machines can print other results
   (x87 intermediates kept in 80 bits, compilers contracting a·b + c into fma, `-ffast-math`).
 * **Formats:** binary16 (half), bfloat16, binary32 (float), binary64 (double), x87 80-bit
-  extended, binary128 (quad), and a custom format with any precision p (1 – 100 000 bits) and a
-  bounded or unbounded exponent. Five IEEE rounding modes.
+  extended, binary128 (quad), IEEE 754 decimal64 (both BID and DPD encodings as separate formats),
+  fixed-point Q16.16 (32-bit binary) and DEC(18,4) (64-bit SQL MONEY decimal) with saturating or
+  two's-complement wraparound overflow, and a custom binary format with any precision p (1 – 100 000 bits)
+  and a bounded or unbounded exponent. Five IEEE rounding modes.
 * **Results:** one row for every assigned variable (the final result and the intermediate values that
   later steps use are marked), with the true value and every format side by side, so paired variants
   such as a forward and a backward sum can be compared at a glance. Values are printed as the shortest
@@ -108,9 +110,10 @@ roundings give a different result than a single one (x87 extended → double), t
 this double rounding.
 
 ### Examples
-25 built-in examples, ordered as a learning path in six groups: basics (representation, integers, special
+27 built-in examples, ordered as a learning path in six groups: basics (representation, integers, special
 values), accumulating rounding errors, cancellation and stable rewrites, amplified errors (unstable
-algorithms and sensitive problems), conditioning versus stability, and hardware (fma, x87 double rounding). Every example states
+algorithms and sensitive problems), conditioning versus stability, and hardware (fma, x87 double rounding,
+decimal64 BID/DPD vs binary, and fixed-point saturation vs wraparound). Every example states
 what happens, the lesson to take away and where in the tool to look (a step, the chart, the sweep or the
 Rearrange view).
 

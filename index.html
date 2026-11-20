@@ -60,6 +60,14 @@
       <section>
         <h2 data-i18n="setup.formats"></h2>
         <div id="formats" class="formats"></div>
+        <fieldset id="fixed-overflow-box" class="fx-ovf-box">
+          <legend data-i18n="setup.fixedOverflow"></legend>
+          <div class="fx-ovf-radios">
+            <label class="radio-opt"><input type="radio" name="fixed-overflow" id="ovf-sat" value="sat" checked /> <span data-i18n="setup.fixedOvf.sat"></span></label>
+            <label class="radio-opt"><input type="radio" name="fixed-overflow" id="ovf-wrap" value="wrap" /> <span data-i18n="setup.fixedOvf.wrap"></span></label>
+          </div>
+          <p id="fixed-overflow-hint" class="muted small" aria-live="polite"></p>
+        </fieldset>
         <div class="custom-fmt">
           <label class="check"><input type="checkbox" id="custom-on" /> <span data-i18n="setup.customFmt"></span></label>
           <label>p <input type="number" id="custom-p" min="1" max="100000" value="100" /> <span data-i18n="setup.bits"></span></label>

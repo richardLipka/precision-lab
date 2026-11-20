@@ -26,7 +26,7 @@
 //  * Thresholds that choose explanations, chips and colours are the named
 //    constants below.
 
-import { log10Abs, floorLog2, dyadic, dyadicDiff, scalePow2 } from './rational.js';
+import { log10Abs, floorLog2, floorLog10, dyadic, dyadicDiff, scalePow2, frac, pow10 } from './rational.js';
 import { fpToFraction } from './ieee.js';
 
 /** log10(2): one bit is worth about 0.301 decimal digits. */
@@ -101,6 +101,12 @@ export const EXACT_LEVEL_GAP = 1;
  * number the gap of the top binade is used.
  */
 function ulpExp(r, fmt) {
+  if (fmt.family === 'decfloat') {
+    let E = r.n === 0n ? fmt.emin : floorLog10(r);
+    if (E < fmt.emin) E = fmt.emin;
+    if (E > fmt.emax) E = fmt.emax;
+    return E - fmt.p + 1;
+  }
   let E = r.n === 0n ? (fmt.bounded ? fmt.emin : 0) : floorLog2(r);
   if (fmt.bounded && E < fmt.emin) E = fmt.emin;
   if (fmt.bounded && E > fmt.emax) E = fmt.emax;
@@ -108,20 +114,43 @@ function ulpExp(r, fmt) {
 }
 
 export function ulpAround(r, fmt) {
-  return dyadic(1n, ulpExp(r, fmt));
+  if (fmt.fixed) return fmt.step;
+  const q = ulpExp(r, fmt);
+  if (fmt.family === 'decfloat') return q >= 0 ? frac(pow10(q), 1n) : frac(1n, pow10(-q));
+  return dyadic(1n, q);
 }
 
 /**
  * How many steps apart two representable numbers (fractions) are in the sorted
- * list of a format's numbers: 1 = neighbours. Unlike an error in ulps this does
- * not depend on whose ulp is used: 1 − 2⁻⁵³ and 1 are neighbours in double,
- * although they differ by only half an ulp of 1. Each number gets its position
- * (ordinal) counted from 0: the binade [0, 2^(emin+1)) holds 2^p numbers with
- * the subnormal spacing, every later binade 2^(p−1). Unbounded formats count
- * from the lower binade of the two (null when a zero or a sign change makes
- * the count infinite).
+ * list of a format's numbers: 1 = neighbours. Supports binary FP, decimal64,
+ * and fixed-point grids.
  */
 export function stepsBetween(a, b, fmt) {
+  if (fmt.fixed) {
+    const d = a.sub(b).abs().div(fmt.step);
+    return Number(d.n / d.d);
+  }
+  if (fmt.family === 'decfloat') {
+    const tenP = pow10(fmt.p);
+    const tenPm1 = pow10(fmt.p - 1);
+    const decadeCount = 9n * tenPm1;
+    const base = fmt.emin;
+    const whole = (r) => r.n / r.d;
+    const pow10Frac = (e) => (e >= 0 ? frac(pow10(e), 1n) : frac(1n, pow10(-e)));
+    const ordinal = (x) => {
+      if (x.n === 0n) return 0n;
+      const m = x.abs();
+      const E = Math.max(floorLog10(m), base);
+      const q = E - fmt.p + 1;
+      const ulp = pow10Frac(q);
+      let o;
+      if (E === base) o = whole(m.div(ulp));
+      else o = tenP + BigInt(E - base - 1) * decadeCount + whole(m.sub(pow10Frac(E)).div(ulp));
+      return x.s < 0n ? -o : o;
+    };
+    const d = ordinal(a) - ordinal(b);
+    return Number(d < 0n ? -d : d);
+  }
   let base;
   if (fmt.bounded) base = fmt.emin;
   else {
@@ -180,7 +209,10 @@ export function compareToExact(v, x, fmt) {
   const abs = err.abs();
   if (abs.n === 0n) return { status: 'exact', abs, rel: abs, ulps: abs, err, digits: Infinity, log10Rel: -Infinity };
   // Errors in ulps are meaningless when the true value is 0 (any nonzero result is "infinitely" wrong relatively).
-  const ulps = x.r.n === 0n ? null : scalePow2(abs, -ulpExp(x.r, fmt));
+  const ulps = x.r.n === 0n ? null
+    : fmt.radix === 10 ? abs.div(ulpAround(x.r, fmt))
+    : fmt.fixed ? scalePow2(abs, -fmt.scaleExp)
+    : scalePow2(abs, -ulpExp(x.r, fmt));
   if (!ulps) {
     return { status: 'approx', err, abs, rel: null, ulps: null, ulpsApprox: Infinity, log10Rel: Infinity, digits: 0 };
   }
@@ -205,21 +237,20 @@ export function compareToExact(v, x, fmt) {
 
 /**
  * The rounding error committed by one step: rounded − exact result of the
- * operation on the rounded operands, in ulp around that exact result
- * (= the gap between the two neighbours the rounding chose from).
+ * operation on the rounded operands, in ulp (or fixed step Δ) around that exact result.
  */
 export function localError(res, fmt) {
   // A stand-in exact result beyond the reference's range has no measurable rounding error.
   if (!res.round || !isNum(res.value) || res.exactOp.kind !== 'finite' || res.exactOp.beyond) return null;
   const { err, rel } = dyadicDiff(fpToFraction(res.value), res.exactOp.r);
   const abs = err.abs();
-  const ue = ulpExp(res.exactOp.r, fmt);
-  const ulp = dyadic(1n, ue);
+  const ulp = ulpAround(res.exactOp.r, fmt);
+  const ulps = fmt.radix === 10 ? abs.div(ulp) : scalePow2(abs, fmt.fixed ? -fmt.scaleExp : -ulpExp(res.exactOp.r, fmt));
   return {
     err,
     abs,
     ulp,
-    ulps: scalePow2(abs, -ue),
+    ulps,
     rel,
   };
 }
@@ -228,9 +259,14 @@ export function localError(res, fmt) {
 // Correct digits
 // ---------------------------------------------------------------------------
 
-/** Decimal digits a p-bit significand holds: p·log10 2 (accepts a format or p). */
+/** Decimal digits the format holds (accepts a format descriptor or binary bit count p). */
 export function fullDigits(fmtOrP) {
-  return (typeof fmtOrP === 'number' ? fmtOrP : fmtOrP.p) * LOG10_2;
+  if (typeof fmtOrP === 'number') return fmtOrP * LOG10_2;
+  if (fmtOrP.family === 'decfloat') return fmtOrP.p;
+  if (fmtOrP.fixed) {
+    return fmtOrP.radix === 10 ? Math.log10(Number(fmtOrP.maxInt)) : (fmtOrP.totalBits - 1) * LOG10_2;
+  }
+  return fmtOrP.p * LOG10_2;
 }
 
 /**

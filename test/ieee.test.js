@@ -6,7 +6,12 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { init } from 'gmp-wasm';
-import { FORMATS, makeFormat, roundFraction, fpOp, fp, encode, fpToFraction, shortestDecimal, exponentOf, fpEquals } from '../src/engine/ieee.js';
+import {
+  FORMATS, makeFormat, roundFraction, fpOp, fp, encode, fpToFraction, shortestDecimal, exponentOf, fpEquals,
+  withOverflowMode, encodeDpdDeclet, decodeDpdDeclet, decodeDecimal64, maxFinite, minFinite,
+} from '../src/engine/ieee.js';
+import { evaluate } from '../src/engine/evaluator.js';
+import { explainStep } from '../src/engine/explain.js';
 import { frac, Fraction, dyadic, parseLiteral } from '../src/engine/rational.js';
 
 const F = Object.fromEntries(FORMATS.map((f) => [f.id, f]));
@@ -352,5 +357,144 @@ describe('format details', () => {
     expect(parseLiteral('0/0')).toBeNull();
     expect(parseLiteral('-0/1')).toMatchObject({ kind: 'finite', negZero: true });
     expect(parseLiteral('0/-1')).toMatchObject({ kind: 'finite', negZero: true });
+  });
+});
+
+describe('IEEE 754 decimal64 (BID and DPD)', () => {
+  it('round-trips all 1,000 DPD 10-bit declets losslessly', () => {
+    const seen = new Set();
+    for (let d1 = 0; d1 <= 9; d1++) {
+      for (let d2 = 0; d2 <= 9; d2++) {
+        for (let d3 = 0; d3 <= 9; d3++) {
+          const enc = encodeDpdDeclet(d1, d2, d3);
+          expect(enc.length).toBe(10);
+          expect(seen.has(enc)).toBe(false);
+          seen.add(enc);
+          expect(decodeDpdDeclet(enc)).toEqual([d1, d2, d3]);
+        }
+      }
+    }
+    expect(seen.size).toBe(1000);
+  });
+
+  it('matches canonical IEEE 754 decimal64 BID and DPD 64-bit hex encodings and round-trips', () => {
+    const cases = [
+      { v: fp.zero(0, 0, 10), bid: '0x31C0000000000000', dpd: '0x2238000000000000' },
+      { v: fp.zero(1, 0, 10), bid: '0xB1C0000000000000', dpd: '0xA238000000000000' },
+      { v: fp.finite(0, 1n, 0, 10), bid: '0x31C0000000000001', dpd: '0x2238000000000001' },
+      { v: fp.finite(0, 1n, -1, 10), bid: '0x31A0000000000001', dpd: '0x2234000000000001' },
+      { v: fp.inf(0), bid: '0x7800000000000000', dpd: '0x7800000000000000' },
+      { v: fp.inf(1), bid: '0xF800000000000000', dpd: '0xF800000000000000' },
+      { v: fp.nan(), bid: '0x7C00000000000000', dpd: '0x7C00000000000000' },
+    ];
+    for (const { v, bid, dpd } of cases) {
+      const eBid = encode(v, F.decimal64_bid);
+      const eDpd = encode(v, F.decimal64_dpd);
+      expect(eBid.bitsStr.length).toBe(64);
+      expect(eDpd.bitsStr.length).toBe(64);
+      expect(eBid.hex).toBe(bid);
+      expect(eDpd.hex).toBe(dpd);
+      expect(fpEquals(decodeDecimal64(eBid.bitsStr, 'bid'), v)).toBe(true);
+      expect(fpEquals(decodeDecimal64(eDpd.bitsStr, 'dpd'), v)).toBe(true);
+    }
+    // Large significand (c >= 2^53) uses BID '11'-prefix combination form and DPD d0=9 form
+    const bigC = fp.finite(0, 9999999999999999n, 0, 10);
+    const eBid = encode(bigC, F.decimal64_bid);
+    const eDpd = encode(bigC, F.decimal64_dpd);
+    expect(eBid.bidLarge).toBe(true);
+    expect(eBid.comb.startsWith('11')).toBe(true);
+    expect(eDpd.comb5.startsWith('11')).toBe(true);
+    expect(decodeDecimal64(eBid.bitsStr, 'bid')).toEqual(bigC);
+    expect(decodeDecimal64(eDpd.bitsStr, 'dpd')).toEqual(bigC);
+    // Subnormal (1e-398, E=0)
+    const sub = fp.finite(0, 1n, -398, 10);
+    expect(encode(sub, F.decimal64_bid).cls).toBe('subnormal');
+    expect(decodeDecimal64(encode(sub, F.decimal64_bid).bitsStr, 'bid')).toEqual(sub);
+    expect(decodeDecimal64(encode(sub, F.decimal64_dpd).bitsStr, 'dpd')).toEqual(sub);
+  });
+
+  it('computes 0.1 + 0.2 == 0.3 exactly, preserves cohorts, and rounds base-10 ties across all 5 modes', () => {
+    const r = evaluate({
+      program: 'c = a + b\nc == 0.3\nx = 1.0 + 2.00',
+      variables: [{ name: 'a', value: '0.1' }, { name: 'b', value: '0.2' }],
+      formats: [F.decimal64_bid, F.decimal64_dpd],
+      mode: 'RNE',
+    });
+    const cBid = r.steps[r.env.c].fmt.decimal64_bid;
+    const cDpd = r.steps[r.env.c].fmt.decimal64_dpd;
+    expect(cBid.flags.inexact).toBe(false);
+    expect(shortestDecimal(cBid.value, F.decimal64_bid)).toBe('0.3');
+    expect(shortestDecimal(cDpd.value, F.decimal64_dpd)).toBe('0.3');
+    expect(encode(cBid.value, F.decimal64_bid).hex).not.toBe(encode(cDpd.value, F.decimal64_dpd).hex);
+    expect(fpToFraction(r.steps[r.env.x].fmt.decimal64_bid.value).toFraction()).toBe('3');
+    expect(r.steps[r.env.x].fmt.decimal64_bid.value.q).toBe(-2); // preferred quantum min(-1, -2) = -2
+
+    // Exact decimal tie (guard digit 5, sticky 0): 1.0000000000000005 (last kept 0 even) vs 1.0000000000000015 (last kept 1 odd)
+    const tieEven = new Fraction(10n ** 16n + 5n, 10n ** 16n);
+    const tieOdd = new Fraction(10n ** 16n + 15n, 10n ** 16n);
+    const rneEven = roundFraction(tieEven, F.decimal64_bid, 'RNE');
+    const rnaEven = roundFraction(tieEven, F.decimal64_bid, 'RNA');
+    const rneOdd = roundFraction(tieOdd, F.decimal64_bid, 'RNE');
+    expect(rneEven.guard).toBe(5);
+    expect(rneEven.sticky).toBe(false);
+    expect(fpToFraction(rneEven.value).toFraction()).toBe('1');
+    expect(fpToFraction(rnaEven.value).equals(new Fraction(10n ** 15n + 1n, 10n ** 15n))).toBe(true);
+    expect(fpToFraction(rneOdd.value).equals(new Fraction(10n ** 15n + 2n, 10n ** 15n))).toBe(true);
+  });
+});
+
+describe('fixed-point Q16.16 and DEC(18,4)', () => {
+  it('encodes Q16.16 two’s-complement bits and hex accurately', () => {
+    expect(encode(roundFraction(new Fraction(0), F.q16_16).value, F.q16_16).hex).toBe('0x00000000');
+    expect(encode(roundFraction(new Fraction(1), F.q16_16).value, F.q16_16).hex).toBe('0x00010000');
+    expect(encode(roundFraction(new Fraction(-1), F.q16_16).value, F.q16_16).hex).toBe('0xFFFF0000');
+    expect(encode(roundFraction(new Fraction(1, 2), F.q16_16).value, F.q16_16).hex).toBe('0x00008000');
+    expect(encode(minFinite(F.q16_16), F.q16_16).hex).toBe('0x80000000');
+    expect(encode(maxFinite(F.q16_16), F.q16_16).hex).toBe('0x7FFFFFFF');
+  });
+
+  it('switches cleanly between saturation and two’s-complement wraparound on overflow and neg(min)', () => {
+    const rSat = evaluate({ program: 's = 20000 + 20000\nn = -(-32768)\na = abs(-32768)', formats: [F.q16_16], mode: 'RNE', overflowMode: 'sat' });
+    const rWrap = evaluate({ program: 's = 20000 + 20000\nn = -(-32768)\na = abs(-32768)', formats: [F.q16_16], mode: 'RNE', overflowMode: 'wrap' });
+
+    const sSat = rSat.steps[rSat.env.s];
+    const sWrap = rWrap.steps[rWrap.env.s];
+    expect(fpEquals(sSat.fmt.q16_16.value, maxFinite(F.q16_16))).toBe(true);
+    expect(sSat.fmt.q16_16.round.overflowKind).toBe('sat');
+    expect(fpToFraction(sWrap.fmt.q16_16.value).toFraction()).toBe('-25536');
+    expect(sWrap.fmt.q16_16.round.overflowKind).toBe('wrap');
+
+    // Two's-complement asymmetry: -(-32768) saturates to maxFinite or wraps back to -32768
+    expect(fpEquals(rSat.steps[rSat.env.n].fmt.q16_16.value, maxFinite(F.q16_16))).toBe(true);
+    expect(fpEquals(rWrap.steps[rWrap.env.n].fmt.q16_16.value, minFinite(F.q16_16))).toBe(true);
+    expect(fpEquals(rSat.steps[rSat.env.a].fmt.q16_16.value, maxFinite(F.q16_16))).toBe(true);
+    expect(fpEquals(rWrap.steps[rWrap.env.a].fmt.q16_16.value, minFinite(F.q16_16))).toBe(true);
+
+    // Explainers name saturation vs wraparound accurately
+    const exSat = explainStep(sSat, rSat.steps, withOverflowMode(F.q16_16, 'sat'), 'RNE');
+    const exWrap = explainStep(sWrap, rWrap.steps, withOverflowMode(F.q16_16, 'wrap'), 'RNE');
+    expect(exSat.cause.code).toBe('saturate');
+    expect(exSat.items[0].code).toBe('fxp.saturate');
+    expect(exWrap.cause.code).toBe('wrap');
+    expect(exWrap.items[0].code).toBe('fxp.wrap');
+  });
+
+  it('DEC(18,4) keeps 0.1 sums & 1e12 + 0.0001 exact, flushes tiny products to 0, traps on div0, and supports casts', () => {
+    const r = evaluate({
+      program: 's = 0\nrepeat 10 { s = s + 0.1 }\nbig = 1e12 + 0.0001\ntiny = 0.01 * 0.001\ndiv0 = 1 / 0\nc1 = decimal64(0.1)\nc2 = q16_16(1.5)\nc3 = dec18_4(1/3)',
+      formats: [F.dec18_4, F.binary64],
+      mode: 'RNE',
+    });
+    expect(shortestDecimal(r.steps[r.env.s].fmt.dec18_4.value, F.dec18_4)).toBe('1');
+    expect(shortestDecimal(r.steps[r.env.big].fmt.dec18_4.value, F.dec18_4)).toBe('1000000000000.0001');
+    expect(r.steps[r.env.tiny].fmt.dec18_4.value.kind).toBe('zero');
+    expect(r.steps[r.env.tiny].fmt.dec18_4.flags.underflow).toBe(true);
+    expect(r.steps[r.env.div0].fmt.dec18_4.value.trap).toBe(true);
+    expect(shortestDecimal(r.steps[r.env.div0].fmt.dec18_4.value, F.dec18_4)).toBe('ERR');
+    expect(r.steps[r.env.div0].fmt.dec18_4.flags.divByZero).toBe(true);
+    expect(shortestDecimal(r.steps[r.env.c3].fmt.dec18_4.value, F.dec18_4)).toBe('0.3333');
+    // Cast double(0.1) → decimal64(0.1) → double works cleanly
+    expect(r.steps[r.env.c1].fmt.binary64.value.kind).toBe('finite');
+    expect(fpToFraction(r.steps[r.env.c2].fmt.binary64.value).toFraction()).toBe('3/2');
   });
 });

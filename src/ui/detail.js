@@ -3,7 +3,7 @@
 // representable numbers, the bit pattern and the error.
 
 import {
-  shortestDecimal, encode, binarySci, fpToFraction, fpEquals, exactShort, ulpOf, formatFacts, CASTS, FORMATS,
+  shortestDecimal, encode, binarySci, fpToFraction, fpEquals, exactShort, ulpOf, formatFacts, withOverflowMode, CASTS, FORMATS,
 } from '../engine/ieee.js';
 import { exactDecimal, fmtFrac } from '../engine/rational.js';
 import { compareToExact, localError, ulpAround, correctDigits, QUALITY_GOOD, QUALITY_MID } from '../engine/metrics.js';
@@ -144,16 +144,57 @@ function fractionText(r) {
 
 function bitsHtml(v, fmt) {
   const enc = encode(v, fmt);
+  const group = (s) => s.replace(/(.{4})/g, '$1​').split('').map((c) => (c === '​' ? '<wbr>' : c)).join('');
+  if (fmt.family === 'decfloat') {
+    const cohort = enc.decCoef != null
+      ? `<div class="kv"><span>${t('bits.cohort')}</span><span class="mono">${v.sign ? '−' : '+'}${enc.decCoef} × 10^${enc.decExp}</span></div>
+         <div class="kv"><span>${t('bits.expBiased')}</span><span class="mono">${enc.biasedExp} (${t('bits.biasNote', { b: fmt.bias, q: enc.decExp })})</span></div>`
+      : '';
+    if (enc.encoding === 'bid') {
+      const combDetail = enc.expBits
+        ? `<div class="kv"><span>${t('bits.bidComb')}</span><span class="mono">${enc.bidLarge ? `11 | ${enc.expBits} | ${enc.sigHi} (+100₂)` : `${enc.expBits} | ${enc.sigHi}`}</span></div>`
+        : '';
+      return `<div class="bits"><span class="b-sign" title="${t('bits.sign')}">${enc.sign}</span><span class="b-comb" title="${t('bits.comb13')}">${group(enc.comb)}</span><span class="b-frac" title="${t('bits.bidCont')}">${group(enc.cont)}</span></div>
+        <div class="bits-legend small"><span><i class="b-sign"></i>${t('bits.sign')}</span><span><i class="b-comb"></i>${t('bits.comb13')}</span><span><i class="b-frac"></i>${t('bits.bidCont')}</span></div>
+        <div class="kv"><span>hex</span><span class="mono long">${enc.hex}</span></div>
+        <div class="kv"><span>${t('bits.class')}</span><span>${t('class.' + enc.cls)}</span></div>
+        ${combDetail}${cohort}`;
+    }
+    const decletSpans = enc.declets.map((d, i) => `<span class="b-declet" title="${escapeHtml(enc.decletDigits ? `${enc.decletDigits[i]} → ${d}` : `declet ${i + 1}`)}">${d}</span>`).join('');
+    const decletTable = enc.decletDigits
+      ? `<div class="dpd-grid"><div class="dpd-cell"><span class="muted small">d₁₅</span><b class="mono">${enc.leadDigit}</b><span class="mono small">${enc.comb5}</span></div>${enc.decletDigits.map((dg, i) => `<div class="dpd-cell"><span class="muted small">D${i + 1}</span><b class="mono">${dg}</b><span class="mono small">${enc.declets[i]}</span></div>`).join('')}</div>`
+      : '';
+    return `<div class="bits"><span class="b-sign" title="${t('bits.sign')}">${enc.sign}</span><span class="b-comb" title="${t('bits.comb5')}">${enc.comb5}</span><span class="b-exp" title="${t('bits.dpdExp')}">${group(enc.eCont)}</span>${decletSpans}</div>
+      <div class="bits-legend small"><span><i class="b-sign"></i>${t('bits.sign')}</span><span><i class="b-comb"></i>${t('bits.comb5')}</span><span><i class="b-exp"></i>${t('bits.dpdExp')}</span><span><i class="b-declet"></i>${t('bits.dpdDeclets')}</span></div>
+      ${decletTable}
+      <div class="kv"><span>hex</span><span class="mono long">${enc.hex}</span></div>
+      <div class="kv"><span>${t('bits.class')}</span><span>${t('class.' + enc.cls)}</span></div>
+      ${cohort}`;
+  }
+  if (fmt.fixed) {
+    if (enc.cls === 'trap') {
+      return `<div class="muted small">${escapeHtml(t('bits.fixedTrap'))}</div>`;
+    }
+    if (fmt.radix === 2) {
+      return `<div class="bits"><span class="b-sign" title="${t('bits.signTwos')}">${enc.sign}</span><span class="b-int" title="${t('bits.fixedInt', { n: fmt.intBits })}">${group(enc.intPart)}</span><span class="bin-point">.</span><span class="b-frac" title="${t('bits.fixedFrac', { n: fmt.fracBits })}">${group(enc.fracPart)}</span></div>
+        <div class="bits-legend small"><span><i class="b-sign"></i>${t('bits.signTwos')}</span><span><i class="b-int"></i>${t('bits.fixedInt', { n: fmt.intBits })}</span><span><i class="b-frac"></i>${t('bits.fixedFrac', { n: fmt.fracBits })}</span></div>
+        <div class="kv"><span>hex</span><span class="mono">${enc.hex}</span></div>
+        <div class="kv"><span>${t('bits.rawInt')}</span><span class="mono">${enc.rawInt} × 2^${fmt.scaleExp}</span></div>`;
+    }
+    return `<div class="bits"><span class="b-sign">${enc.decSign}</span><span class="b-int">${enc.decInt}</span><span class="bin-point">.</span><span class="b-frac">${enc.decFrac}</span></div>
+      <div class="bits"><span class="b-sign" title="${t('bits.signTwos')}">${enc.sign}</span><span class="b-int" title="${t('bits.rawInt64')}">${group(enc.intBits)}</span></div>
+      <div class="bits-legend small"><span><i class="b-sign"></i>${t('bits.signTwos')}</span><span><i class="b-int"></i>${t('bits.rawInt64')}</span></div>
+      <div class="kv"><span>hex</span><span class="mono long">${enc.hex}</span></div>
+      <div class="kv"><span>${t('bits.rawInt')}</span><span class="mono">${enc.rawInt} × 10^${fmt.scaleExp}</span></div>`;
+  }
   if (enc.unbounded) {
     if (v.kind !== 'finite') return `<div class="muted">${escapeHtml(t('class.' + (v.kind === 'inf' ? 'infinity' : v.kind === 'nan' ? 'NaN' : 'zero')))}</div>`;
     const sig = enc.significand.length > 256 ? enc.significand.slice(0, 256) + '…' : enc.significand;
     return `<div class="bits"><span class="b-sign">${enc.sign}</span> <span class="b-frac">${sig[0]}.${sig.slice(1)}</span> × 2^${enc.exponentValue}</div>
       <div class="muted small">${t('det.unboundedBits')}</div>`;
   }
-  const group = (s) => s.replace(/(.{4})/g, '$1​').split('').map((c) => (c === '​' ? '<wbr>' : c)).join('');
   const fracPart = fmt.explicitBit ? enc.fraction.slice(1) : enc.fraction;
   const fracShown = fracPart.length > 512 ? fracPart.slice(0, 512) + '…' : fracPart;
-  // In subnormal numbers, leading zeros in the fraction show the lost precision bits visually.
   let fracInner;
   if (enc.cls === 'subnormal') {
     const lz = /^0+/.exec(fracShown)?.[0].length ?? 0;
@@ -177,6 +218,10 @@ function numberLine(res, fmt, roundFmt = fmt) {
   if (!R) return '';
   if (R.overflow) {
     const ovFmt = res.cast?.r1?.overflow ? roundFmt : fmt;
+    if (ovFmt.fixed) {
+      const key = R.overflowKind === 'wrap' ? 'nl.fixedWrap' : 'nl.fixedSat';
+      return `<p class="bad">${escapeHtml(t(key, { fmt: fmtName(ovFmt), v: shortestDecimal(res.value, fmt), bits: ovFmt.totalBits }))}</p>`;
+    }
     return `<p class="bad">${escapeHtml(t('nl.overflow', { fmt: fmtName(ovFmt), v: shortestDecimal(res.value, fmt) }))}</p>`;
   }
   const W = 420;
@@ -218,7 +263,7 @@ function numberLine(res, fmt, roundFmt = fmt) {
   const yu = y + 54;
   const ulpMark = gap && gap.n !== 0n ? `<line x1="${x0}" x2="${x1}" y1="${yu}" y2="${yu}" class="nl-ulp"/>
     <line x1="${x0}" x2="${x0}" y1="${yu - 4}" y2="${yu + 4}" class="nl-ulp"/><line x1="${x1}" x2="${x1}" y1="${yu - 4}" y2="${yu + 4}" class="nl-ulp"/>
-    <text x="${(x0 + x1) / 2}" y="${yu + 14}" text-anchor="middle" class="nl-text nl-ulp-text">${escapeHtml(t('nl.ulp', { ulp: fmtErr(gap, 4) }))}</text>` : '';
+    <text x="${(x0 + x1) / 2}" y="${yu + 14}" text-anchor="middle" class="nl-text nl-ulp-text">${escapeHtml(roundFmt.fixed ? t('nl.step', { step: fmtErr(gap, 4) }) : t('nl.ulp', { ulp: fmtErr(gap, 4) }))}</text>` : '';
   const px = x0 + tt * (x1 - x0);
   const chosenVal = res.cast ? res.cast.mid : res.value;
   const sameEnd = (u) => fpEquals(chosenVal, u) || (finite(chosenVal) && finite(u) && fpToFraction(chosenVal).equals(fpToFraction(u)));
@@ -296,7 +341,7 @@ export function renderDetail(host, ctx) {
   const v = res.value;
   const cmp = compareToExact(v, step.exact, fmt);
   const dg = correctDigits(cmp, fmt);
-  const roundFmt = res.cast ? FORMATS.find((f) => f.id === res.cast.target) : fmt;
+  const roundFmt = res.cast ? withOverflowMode(FORMATS.find((f) => f.id === res.cast.target), result.overflowMode || 'sat') : fmt;
   const loc = localError(res, roundFmt);
   const R = res.round;
   const ex = explainStep(step, steps, fmt, result.mode);
@@ -306,14 +351,16 @@ export function renderDetail(host, ctx) {
   const exactBeforeTip = step.kind === 'op' && !res.cast
     ? t('det.exactBeforeNote', { fmt: fmtName(fmt), true: trueText(step.exact, 20) }) : '';
   const hasFlags = Object.values(res.flags || {}).some(Boolean);
+  const guardKey = roundFmt.radix === 10 ? 'det.guardDec' : 'det.guard';
+  const stepUnit = roundFmt.fixed ? 'Δ' : 'ulp';
   const roundingSection = R ? `
     <section class="det-round"><h3>${escapeHtml(t('det.rounding', { fmt: fmtName(roundFmt) }))} <span class="muted small">(${escapeHtml(t('mode.' + result.mode))})</span></h3>
       ${numberLine(res, fmt, roundFmt)}
-      <div class="kv"><span>${t('det.direction')}</span><span>${R.direction === 'exact' ? t('det.noRounding') : R.direction === 'up' ? t('det.roundedUp') : t('det.roundedDown')}${R.inexact && !R.overflow ? ` · ${t('det.guard', { g: R.guard, s: R.sticky ? 1 : 0 })}` : ''}</span></div>
-      ${R.inexact ? `<div class="kv"><span>${t('det.stepError')}</span><span>${loc ? `${fmtErr(loc.abs)} = ${fmtErr(loc.ulps, 3)} ulp` : '—'}</span></div>` : ''}
-      ${loc && R.inexact && !R.overflow ? `<div class="kv"><span>${t('det.stepUlp')}</span><span class="mono">${fmtErr(loc.ulp, 6)}</span></div>` : ''}
+      <div class="kv"><span>${t('det.direction')}</span><span>${R.direction === 'exact' ? t('det.noRounding') : R.direction === 'up' ? t('det.roundedUp') : t('det.roundedDown')}${R.inexact && !R.overflow ? ` · ${t(guardKey, { g: R.guard, s: R.sticky ? 1 : 0 })}` : ''}</span></div>
+      ${R.inexact ? `<div class="kv"><span>${t('det.stepError')}</span><span>${loc ? `${fmtErr(loc.abs)} = ${fmtErr(loc.ulps, 3)} ${stepUnit}` : '—'}</span></div>` : ''}
+      ${loc && R.inexact && !R.overflow ? `<div class="kv"><span>${t(roundFmt.fixed ? 'det.stepDelta' : 'det.stepUlp')}</span><span class="mono">${fmtErr(loc.ulp, 6)}</span></div>` : ''}
       ${hasFlags ? `<div class="kv"><span>${t('det.flags')}</span><span>${flagList(res.flags)}</span></div>` : ''}
-    </section>` : (!COMPARISONS.includes(step.op) ? `<section><h3>${t('det.result')}</h3><p class="muted small">${step.op === 'neg' || step.op === 'abs' ? t('det.signExact') : t('det.specialRule')}</p>${hasFlags ? `<div class="kv"><span>${t('det.flags')}</span><span>${flagList(res.flags)}</span></div>` : ''}</section>` : '');
+    </section>` : (!COMPARISONS.includes(step.op) ? `<section><h3>${t('det.result')}</h3><p class="muted small">${step.op === 'neg' || step.op === 'abs' ? t('det.signExact') : t(fmt.fixed ? 'det.fixedTrapRule' : 'det.specialRule')}</p>${hasFlags ? `<div class="kv"><span>${t('det.flags')}</span><span>${flagList(res.flags)}</span></div>` : ''}</section>` : '');
 
   const errSection = (() => {
     if (cmp.status === 'exact') return `<p class="good small">${t('det.equal')}</p>`;
@@ -323,12 +370,42 @@ export function renderDetail(host, ctx) {
     return `<div class="kv"><span>${t('det.digits')}</span><span class="mono">${cmp.rel ? dg.shown.toFixed(1) : '—'} <span class="muted">${t('det.of', { n: dg.full.toFixed(1) })}</span>${cmp.rel && dg.capped ? `<br><span class="muted small">${escapeHtml(t('det.digitsRaw', { raw: dg.raw.toFixed(2) }))}</span>` : ''}</span></div>
       <div class="kv"><span>${t('det.absErr')}</span><span class="mono">${fmtErr(cmp.abs)}</span></div>
       <div class="kv"><span>${t('det.relErr')}</span><span class="mono">${cmp.rel ? fmtErr(cmp.rel) : t('det.relZero')}</span></div>
-      <div class="kv"><span>${t('det.ulpErr')}</span><span class="mono">${fmtErr(cmp.ulps, 4)}</span></div>`;
+      <div class="kv"><span>${t(fmt.fixed ? 'det.deltaErr' : 'det.ulpErr')}</span><span class="mono">${fmtErr(cmp.ulps, 4)}</span></div>`;
   })();
 
   const facts = formatFacts(fmt);
   const causeLead = ex.cause ? `<p class="muted small cause-lead cause-tip">${escapeHtml(t('cause.' + ex.cause.code + '.tip'))}</p>` : '';
   const showUnrounded = R && step.kind === 'op' && !res.cast;
+  const fmtNoteKey = `fmt.note.${fmt.id}`;
+  const fmtNoteHtml = t(fmtNoteKey) !== fmtNoteKey ? `<p class="muted small fmt-note">${escapeHtml(t(fmtNoteKey))}</p>` : '';
+  const aboutBody = fmt.fixed
+    ? `<p class="small">${escapeHtml(t('det.fixedAbout', { bits: fmt.totalBits, step: fmtFrac(facts.step, 6), min: fmtFrac(facts.min, 8), max: fmtFrac(facts.max, 8), ovf: t('setup.fixedOvf.' + (fmt.overflowMode || 'sat')) }))}</p>
+      <div class="kv"><span>${t('det.stepDelta')}</span><span class="mono">${fmtFrac(facts.step, 8)}</span></div>
+      <div class="kv"><span>${t('det.minVal')}</span><span class="mono">${fmtFrac(facts.min, 12)}</span></div>
+      <div class="kv"><span>${t('det.max')}</span><span class="mono">${fmtFrac(facts.max, 12)}</span></div>
+      <div class="kv"><span>${t('det.fixedOvfLabel')}</span><span>${escapeHtml(t('setup.fixedOvf.' + (fmt.overflowMode || 'sat')))}</span></div>
+      <div class="kv"><span>${t('det.storage')}</span><span>${t('det.storageVal', { n: fmt.totalBits })}</span></div>`
+    : fmt.family === 'decfloat'
+      ? `<p class="small">${escapeHtml(t('det.decAbout', { p: fmt.p, enc: fmt.encoding.toUpperCase(), min: fmtFrac(facts.minSubnormal, 3), max: fmtFrac(facts.max, 3) }))}</p>
+        <div class="kv"><span>${t('det.precision')}</span><span>${t('det.precisionDecVal', { p: fmt.p })}</span></div>
+        <div class="kv"><span>${t('det.eps')}</span><span class="mono">${fmtFrac(facts.epsilon, 6)}</span></div>
+        <div class="kv"><span>${t('det.u')}</span><span class="mono">${fmtFrac(facts.unitRoundoff, 6)}</span></div>
+        <div class="kv"><span>${t('det.expRange')}</span><span>${fmt.emin} … ${fmt.emax} (q: ${fmt.qmin} … ${fmt.qmax})</span></div>
+        <div class="kv"><span>${t('det.max')}</span><span class="mono">${fmtFrac(facts.max, 8)}</span></div>
+        <div class="kv"><span>${t('det.minNormal')}</span><span class="mono">${fmtFrac(facts.minNormal, 8)}</span></div>
+        <div class="kv"><span>${t('det.minSub')}</span><span class="mono">${fmtFrac(facts.minSubnormal, 8)}</span></div>
+        <div class="kv"><span>${t('det.storage')}</span><span>${t('det.storageVal', { n: fmt.totalBits })}</span></div>`
+      : `${fmt.bounded ? `<p class="small">${escapeHtml(t('det.rangeVsPrecision', { p: fmt.p, d: dg.full.toFixed(1), e: fmt.expBits, min: fmtFrac(facts.minSubnormal, 3), max: fmtFrac(facts.max, 3) }))}</p>` : ''}
+        <div class="kv"><span>${t('det.precision')}</span><span>${t('det.precisionVal', { p: fmt.p, d: dg.full.toFixed(2) })}</span></div>
+        <div class="kv"><span>${t('det.eps')}</span><span class="mono">${fmtFrac(facts.epsilon, 6)}</span></div>
+        <div class="kv"><span>${t('det.u')}</span><span class="mono">${fmtFrac(facts.unitRoundoff, 6)}</span></div>
+        ${fmt.bounded ? `<div class="kv"><span>${t('det.expRange')}</span><span>${fmt.emin} … ${fmt.emax}</span></div>
+        <div class="kv"><span>${t('det.max')}</span><span class="mono">${fmtFrac(facts.max, 8)}</span></div>
+        <div class="kv"><span>${t('det.minNormal')}</span><span class="mono">${fmtFrac(facts.minNormal, 8)}</span></div>
+        <div class="kv"><span>${t('det.minSub')}</span><span class="mono">${fmtFrac(facts.minSubnormal, 8)}</span></div>
+        <div class="kv"><span>${t('det.storage')}</span><span>${t('det.storageVal', { n: fmt.totalBits })}</span></div>` : `<p class="muted">${t('det.unboundedFmt')}</p>`}`;
+  const reprLabel = fmt.family === 'decfloat' ? 'det.decCohort' : fmt.fixed ? 'det.fixedScaled' : 'det.binary';
+  const binTitle = fmt.radix === 10 ? 'bin.titleDec' : 'bin.title';
   host.innerHTML = `${head}${tabs}
     <section class="what"><h3>${t('det.what')} ${causeChip(ex.cause)}</h3>${causeLead}${explanationHtml(ex.items)}</section>
     <section><h3>${escapeHtml(t('det.opIn', { fmt: fmtName(fmt) }))}</h3><p class="op-desc">${opDescription(step, steps, fmt.id, fmt)}</p></section>
@@ -339,27 +416,17 @@ export function renderDetail(host, ctx) {
       <div class="kv"><span class="has-tip" title="${escapeHtml(t('det.shortestNote'))}">${t('det.stored')}</span><span class="mono strong long">${escapeHtml(shortestDecimal(v, fmt))}</span></div>
       ${errSection}
     </section>
-    <section class="binary"><h3>${escapeHtml(t('bin.title'))}</h3>${binaryOperationHtml(step, steps, fmt, res, result.mode)}</section>
+    <section class="binary"><h3>${escapeHtml(t(binTitle))}</h3>${binaryOperationHtml(step, steps, fmt, res, result.mode)}</section>
     <details class="detail-fold"><summary>${escapeHtml(t('det.bitsAndExact'))}</summary>
       ${R ? `<div class="kv"><span>${t('det.exactBefore')}</span><div>${exactValText(res.exactOp)}${exactBeforeTip ? `<p class="muted small">${escapeHtml(exactBeforeTip)}</p>` : ''}</div></div>` : ''}
       <div class="kv"><span>${t('det.shortest')}</span><div><span class="mono strong long">${escapeHtml(shortestDecimal(v, fmt))}</span><span class="muted small">${escapeHtml(t('det.shortestNote'))}</span></div></div>
-      ${v.kind === 'finite' ? `<div class="kv"><span>${t('det.binary')}</span><span class="mono long">${escapeHtml(binarySci(v, fmt))}</span></div>` : ''}
+      ${v.kind === 'finite' ? `<div class="kv"><span>${t(reprLabel)}</span><span class="mono long">${escapeHtml(binarySci(v, fmt))}</span></div>` : ''}
       ${v.kind === 'finite' || v.kind === 'zero' ? `<div class="kv"><span>${t('det.storedExact')}</span><div>${decimalBlock(fpToFraction(v), 20000)}</div></div>` : ''}
-      ${v.kind === 'finite' ? `<div class="kv"><span>${t('det.ulpHere')}</span><span class="mono">${fmtErr(ulpOf(v, fmt), 6)}</span></div>` : ''}
+      ${v.kind === 'finite' ? `<div class="kv"><span>${t(fmt.fixed ? 'det.stepDelta' : 'det.ulpHere')}</span><span class="mono">${fmtErr(ulpOf(v, fmt), 6)}</span></div>` : ''}
       ${bitsHtml(v, fmt)}
     </details>
-    ${fmt.id === 'x87' ? `<p class="muted small fmt-note">${escapeHtml(t('fmt.note.x87'))}</p>` : ''}
-    <details class="detail-fold"><summary>${escapeHtml(t('det.about', { fmt: fmtName(fmt) }))}</summary>
-      ${fmt.bounded ? `<p class="small">${escapeHtml(t('det.rangeVsPrecision', { p: fmt.p, d: dg.full.toFixed(1), e: fmt.expBits, min: fmtFrac(facts.minSubnormal, 3), max: fmtFrac(facts.max, 3) }))}</p>` : ''}
-      <div class="kv"><span>${t('det.precision')}</span><span>${t('det.precisionVal', { p: fmt.p, d: dg.full.toFixed(2) })}</span></div>
-      <div class="kv"><span>${t('det.eps')}</span><span class="mono">${fmtFrac(facts.epsilon, 6)}</span></div>
-      <div class="kv"><span>${t('det.u')}</span><span class="mono">${fmtFrac(facts.unitRoundoff, 6)}</span></div>
-      ${fmt.bounded ? `<div class="kv"><span>${t('det.expRange')}</span><span>${fmt.emin} … ${fmt.emax}</span></div>
-      <div class="kv"><span>${t('det.max')}</span><span class="mono">${fmtFrac(facts.max, 8)}</span></div>
-      <div class="kv"><span>${t('det.minNormal')}</span><span class="mono">${fmtFrac(facts.minNormal, 8)}</span></div>
-      <div class="kv"><span>${t('det.minSub')}</span><span class="mono">${fmtFrac(facts.minSubnormal, 8)}</span></div>
-      <div class="kv"><span>${t('det.storage')}</span><span>${t('det.storageVal', { n: fmt.totalBits })}</span></div>` : `<p class="muted">${t('det.unboundedFmt')}</p>`}
-    </details>`;
+    ${fmtNoteHtml}
+    <details class="detail-fold"><summary>${escapeHtml(t('det.about', { fmt: fmtName(fmt) }))}</summary>${aboutBody}</details>`;
   bindLinks(host, ctx);
 }
 

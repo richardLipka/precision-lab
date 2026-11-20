@@ -7,7 +7,7 @@
 // both ends round to the same format number that number is the correctly
 // rounded result, otherwise retry with more digits.
 
-import { Fraction, exact, pow10, ZERO, ONE, dyadic, bitLength, trailingZeros } from './rational.js';
+import { Fraction, exact, pow10, frac, ZERO, ONE, dyadic, bitLength, trailingZeros } from './rational.js';
 import { fp, roundFraction, fpToFraction, fpEquals, fpNeg, flagsFrom, special, exponentOf } from './ieee.js';
 import { decCtx, decFn, decToFraction, fracToDec, exactRoot, decBeyond, MAX_DEC_EXP } from './real.js';
 import { EngineError } from './messages.js';
@@ -25,23 +25,24 @@ const ZIV_MAX_ITER = 7;
 const MAX_EXACT_DYADIC_EXP = 20000;
 const FIVE = 5n;
 
-function exactResult(r, fmt, mode, zeroSign = 0) {
-  const round = roundFraction(r, fmt, mode, zeroSign);
+function exactResult(r, fmt, mode, zeroSign = 0, preferredQ = null) {
+  const round = roundFraction(r, fmt, mode, zeroSign, preferredQ);
   return { value: round.value, exactOp: exact.finite(r), round, flags: flagsFrom(round) };
 }
 
 /**
- * Convert a finite FP value v = (−1)^sign · m · 2^q into a Decimal in C without
- * truncating its exact binary value (so high-condition-number functions such as
- * sin(π), cos(π/2), ln(1 + 2^−52) and pow(1 + 2^−52, 2^52) evaluate on the exact
- * stored operand). Returns { d, exact }.
+ * Convert a finite stored value (binary or decimal, floating or fixed) into a
+ * Decimal in C without truncating its exact stored value. Returns { d, exact }.
  */
 function exactDecOf(v, C) {
   if (v.kind === 'zero') return { d: new C(v.sign ? '-0' : '0'), exact: true };
+  const s = v.sign ? '-' : '';
+  if (v.radix === 10) {
+    return { d: new C(`${s}${v.m.toString()}e${v.q}`), exact: true };
+  }
   const tz = trailingZeros(v.m);
   const m = v.m >> BigInt(tz);
   const q = v.q + tz;
-  const s = v.sign ? '-' : '';
   if (q >= 0 && q <= MAX_EXACT_DYADIC_EXP) {
     return { d: new C(s + (m << BigInt(q)).toString()), exact: true };
   }
@@ -115,7 +116,19 @@ function beyondRange(y, fmt, mode, P) {
   if (!fmt.bounded || y.isNaN()) throw new EngineError('real.range', { max: MAX_DEC_EXP });
   const sign = y.isNeg() ? 1 : 0;
   const huge = !y.isFinite() || y.e > 0;
-  const stand = dyadic(1n, huge ? fmt.emax + 2 : fmt.emin - fmt.p - 2, sign);
+  let stand;
+  if (fmt.fixed) {
+    // Huge values exceed fixed range (saturate or trap/wrap — stand-in beyond max);
+    // tiny values lie strictly between 0 and Δ/4 so they flush to 0 under RNE/RNA/RZ or step by mode.
+    stand = huge
+      ? (sign ? fpToFraction({ kind: 'finite', sign: 1, m: fmt.modulus * 2n, q: fmt.scaleExp, radix: fmt.radix }) : fpToFraction({ kind: 'finite', sign: 0, m: fmt.modulus * 2n, q: fmt.scaleExp, radix: fmt.radix }))
+      : fmt.step.div(16).mul(sign ? -1 : 1);
+  } else if (fmt.family === 'decfloat') {
+    const e = huge ? fmt.emax + 2 : fmt.qmin - 2;
+    stand = e >= 0 ? frac(sign ? -pow10(e) : pow10(e), 1n) : frac(sign ? -1n : 1n, pow10(-e));
+  } else {
+    stand = dyadic(1n, huge ? fmt.emax + 2 : fmt.emin - fmt.p - 2, sign);
+  }
   const round = roundFraction(stand, fmt, mode);
   round.inexact = true;
   return { A: stand, y, round, P, beyond: huge ? 'huge' : 'tiny', sign };
@@ -134,7 +147,7 @@ function irrational(compute, fmt, mode, inexactInput = false) {
   return { value: z.round.value, exactOp, round: z.round, flags: flagsFrom(z.round), uncertain: !!z.uncertain };
 }
 
-const isExactDyadic = (v) => v.kind === 'zero' || Math.abs(v.q + trailingZeros(v.m)) <= MAX_EXACT_DYADIC_EXP;
+const isExactInput = (v) => v.kind === 'zero' || v.radix === 10 || Math.abs(v.q + trailingZeros(v.m)) <= MAX_EXACT_DYADIC_EXP;
 const decOf = (v) => (C) => exactDecOf(v, C).d;
 const isOne = (v) => v.kind === 'finite' && v.sign === 0 && fpToFraction(v).equals(1);
 const isNegOne = (v) => v.kind === 'finite' && v.sign === 1 && fpToFraction(v).equals(-1);
@@ -142,13 +155,12 @@ const isNegOne = (v) => v.kind === 'finite' && v.sign === 1 && fpToFraction(v).e
 /**
  * Exact rounding for tiny nonzero arguments where f(x) lies strictly within a
  * tiny fraction of 1 ulp on a known side of 1 (exp, cos) or x (sin, tan, atan).
- * Avoids precision-limit failures (e.g. decimal.js PI_PRECISION on sin(2^-1000))
- * and thousand-digit Ziv loops (e.g. exp(2^-16000) in binary128 RU).
  */
 function tinyArgResult(name, x, fmt, mode) {
-  const ex = exponentOf(x);
+  if (fmt.fixed) return null;
+  const ex = fmt.radix === 10 ? Math.floor(exponentOf(x) * 3.321928) : exponentOf(x);
   if (Math.abs(ex) > MAX_EXACT_DYADIC_EXP) return null;
-  const p = fmt.p;
+  const p = fmt.radix === 10 ? Math.ceil(fmt.p * 3.321928) + 4 : fmt.p;
   let A = null;
   if (name === 'exp' && ex <= -(p + 5)) {
     if (Math.abs(ex) <= 600) {
@@ -170,7 +182,7 @@ function tinyArgResult(name, x, fmt, mode) {
       const x3 = xr.mul(xr).mul(xr);
       A = name === 'sin' ? xr.sub(x3.div(6)) : name === 'atan' ? xr.sub(x3.div(3)) : xr.add(x3.div(3));
     } else {
-      const eEff = fmt.bounded ? Math.max(ex, fmt.emin) : ex;
+      const eEff = fmt.bounded ? Math.max(ex, fmt.radix === 10 ? Math.floor(fmt.emin * 3.321928) : fmt.emin) : ex;
       const delta = dyadic(1n, eEff - p - 4, name === 'tan' ? x.sign : 1 - x.sign);
       A = fpToFraction(x).add(delta);
     }
@@ -185,30 +197,48 @@ function tinyArgResult(name, x, fmt, mode) {
   return { value: round.value, exactOp, round, flags: flagsFrom(round), uncertain: false };
 }
 
-/** Is the FP value an (exact) integer? */
+/** Is the stored value an (exact) integer? */
 function isInteger(v) {
   if (v.kind === 'zero') return true;
   if (v.kind !== 'finite') return false;
+  if (v.radix === 10) return v.q >= 0 || (v.m % pow10(-v.q)) === 0n;
   return v.q >= 0 || (v.m & ((1n << BigInt(-v.q)) - 1n)) === 0n;
 }
 
 function isOddInteger(v) {
   if (!isInteger(v) || v.kind !== 'finite') return false;
+  if (v.radix === 10) {
+    if (v.q > 0) return false;
+    const intVal = v.q === 0 ? v.m : v.m / pow10(-v.q);
+    return (intVal & 1n) === 1n;
+  }
   if (v.q > 0) return false;
   return ((v.m >> BigInt(-v.q)) & 1n) === 1n;
 }
 
 export function fpFunction(name, args, fmt, mode) {
   const [x, y] = args;
-  const nan = (why) => special(fp.nan(), exact.nan(why), { invalid: true });
+  const nan = (why) => special(fmt.fixed ? fp.trap() : fp.nan(), exact.nan(why), { invalid: true });
   if (name === 'pow') return fpPow(x, y, fmt, mode, nan);
-  if (args.some((a) => a.kind === 'nan')) return special(fp.nan(), exact.nan('NaN operand'));
-  const approxIn = !isExactDyadic(x);
+  if (args.some((a) => a.kind === 'nan')) return special(fmt.fixed ? fp.trap() : fp.nan(), exact.nan(fmt.fixed ? 'error operand' : 'NaN operand'));
+  const approxIn = !isExactInput(x);
   switch (name) {
     case 'sqrt': {
-      if (x.kind === 'zero') return special(x, exact.finite(ZERO));
+      if (x.kind === 'zero') return special(fmt.family === 'decfloat' ? fp.zero(x.sign, Math.floor(x.q / 2), 10) : x, exact.finite(ZERO));
       if (x.sign) return nan('√ of a negative number');
       if (x.kind === 'inf') return special(x, exact.inf(0));
+      if (x.radix === 10) {
+        let m = x.m;
+        let q = x.q;
+        if (q % 2 !== 0) { m *= 10n; q -= 1; }
+        const s = exactRoot(m, 2);
+        if (s != null) {
+          const halfQ = q / 2;
+          const r = halfQ >= 0 ? frac(s * pow10(halfQ), 1n) : frac(s, pow10(-halfQ));
+          return exactResult(r, fmt, mode, 0, fmt.family === 'decfloat' ? Math.floor(x.q / 2) : null);
+        }
+        return irrational((C) => C.sqrt(decOf(x)(C)), fmt, mode, approxIn);
+      }
       // Perfect square? (m·2^q with even q and square m)
       let m = x.m;
       let q = x.q;
@@ -218,19 +248,20 @@ export function fpFunction(name, args, fmt, mode) {
       return irrational((C) => C.sqrt(decOf(x)(C)), fmt, mode, approxIn);
     }
     case 'exp': {
-      if (x.kind === 'inf') return special(x.sign ? fp.zero(0) : x, x.sign ? exact.finite(ZERO) : exact.inf(0));
+      if (x.kind === 'inf') return special(x.sign ? fp.zero(0, fmt.family === 'decfloat' ? fmt.qmin : 0, fmt.radix) : x, x.sign ? exact.finite(ZERO) : exact.inf(0));
       if (x.kind === 'zero') return exactResult(new Fraction(1), fmt, mode);
       return tinyArgResult('exp', x, fmt, mode) || irrational((C) => C.exp(decOf(x)(C)), fmt, mode, approxIn);
     }
     case 'ln':
     case 'log10': {
-      if (x.kind === 'zero') return special(fp.inf(1), exact.nan('logarithm of 0'), { divByZero: true });
+      if (x.kind === 'zero') return special(fmt.fixed ? fp.trap() : fp.inf(1), exact.nan('logarithm of 0'), { divByZero: true });
       if (x.sign) return nan('logarithm of a negative number');
       if (x.kind === 'inf') return special(x, exact.inf(0));
       if (isOne(x)) return exactResult(new Fraction(0), fmt, mode);
-      if (name === 'log10' && isInteger(x)) {
-        const s = fpToFraction(x).n.toString();
-        if (/^10*$/.test(s)) return exactResult(new Fraction(s.length - 1), fmt, mode);
+      if (name === 'log10') {
+        const xr = fpToFraction(x);
+        if (xr.d === 1n && /^10*$/.test(xr.n.toString())) return exactResult(new Fraction(xr.n.toString().length - 1), fmt, mode);
+        if (xr.n === 1n && /^10*$/.test(xr.d.toString())) return exactResult(new Fraction(-(xr.d.toString().length - 1)), fmt, mode);
       }
       return irrational((C) => (name === 'ln' ? C.ln(decOf(x)(C)) : C.log10(decOf(x)(C))), fmt, mode, approxIn);
     }
@@ -252,50 +283,53 @@ export function fpFunction(name, args, fmt, mode) {
 }
 
 function fpPow(x, y, fmt, mode, nan) {
+  if (fmt.fixed && (x.kind === 'nan' || y.kind === 'nan')) return special(fp.trap(), exact.nan('error operand'));
   // IEEE 754-2019 §9.2.1: pow(x, ±0) = 1 and pow(+1, y) = 1 even when the other operand is NaN.
   if (y.kind === 'zero') return exactResult(new Fraction(1), fmt, mode);
   if (isOne(x)) return exactResult(new Fraction(1), fmt, mode);
   if (x.kind === 'nan' || y.kind === 'nan') return special(fp.nan(), exact.nan('NaN operand'));
   const yNeg = y.sign === 1;
   if (y.kind === 'inf') {
-    if (x.kind === 'zero') return special(yNeg ? fp.inf(0) : fp.zero(0), yNeg ? exact.nan('0^(−∞)') : exact.finite(ZERO), yNeg ? { divByZero: true } : {});
+    if (x.kind === 'zero') return special(yNeg ? fp.inf(0) : fp.zero(0, 0, fmt.radix), yNeg ? exact.nan('0^(−∞)') : exact.finite(ZERO), yNeg ? { divByZero: true } : {});
     const cmp1 = x.kind === 'inf' ? 1 : fpToFraction(x).abs().compare(ONE);
     if (cmp1 === 0) return exactResult(new Fraction(1), fmt, mode);
     const big = (cmp1 > 0) !== yNeg;
-    return special(big ? fp.inf(0) : fp.zero(0), big ? exact.inf(0) : exact.finite(ZERO));
+    return special(big ? fp.inf(0) : fp.zero(0, 0, fmt.radix), big ? exact.inf(0) : exact.finite(ZERO));
   }
   const oddInt = isOddInteger(y);
   if (x.kind === 'zero') {
-    const sign = oddInt ? x.sign : 0;
-    if (yNeg) return special(fp.inf(sign), exact.nan('0 to a negative power'), { divByZero: true });
-    return special(fp.zero(sign), exact.finite(ZERO));
+    const sign = !fmt.fixed && oddInt ? x.sign : 0;
+    if (yNeg) return special(fmt.fixed ? fp.trap() : fp.inf(sign), exact.nan('0 to a negative power'), { divByZero: true });
+    return special(fp.zero(sign, fmt.fixed ? fmt.scaleExp : 0, fmt.radix), exact.finite(ZERO));
   }
   if (x.kind === 'inf') {
     const sign = x.sign && oddInt ? 1 : 0;
-    return yNeg ? special(fp.zero(sign), exact.finite(ZERO)) : special(fp.inf(sign), exact.inf(sign));
+    return yNeg ? special(fp.zero(sign, 0, fmt.radix), exact.finite(ZERO)) : special(fp.inf(sign), exact.inf(sign));
   }
   if (x.sign && !isInteger(y)) return nan('negative base with a non-integer exponent');
   if (isNegOne(x) && isInteger(y)) {
     return exactResult(new Fraction(oddInt ? -1 : 1), fmt, mode);
   }
   if (isInteger(y)) {
-    // Integer power of a dyadic number is a dyadic number: exact, then one rounding.
     const e = fpToFraction(y);
     const n = Number(e.s * e.n);
-    // Bound both significand and exponent growth to avoid huge BigInts on scaled bases (e.g. (2^16000)^15000).
     const ex = exponentOf(x);
     const resSign = x.sign && oddInt ? 1 : 0;
-    if (fmt.bounded && Number.isFinite(n)) {
+    if (fmt.bounded && !fmt.fixed && Number.isFinite(n)) {
       const loExp = n > 0 ? n * ex : n * (ex + 1);
       const hiExp = n > 0 ? n * (ex + 1) : n * ex;
       if (loExp > fmt.emax + 2) {
-        const stand = dyadic(1n, fmt.emax + 2, resSign);
+        const stand = fmt.family === 'decfloat'
+          ? frac(resSign ? -pow10(fmt.emax + 2) : pow10(fmt.emax + 2), 1n)
+          : dyadic(1n, fmt.emax + 2, resSign);
         const round = roundFraction(stand, fmt, mode);
         round.inexact = true;
         return { value: round.value, exactOp: { ...exact.inf(resSign), beyond: true }, round, flags: flagsFrom(round) };
       }
       if (hiExp < fmt.emin - fmt.p - 2) {
-        const stand = dyadic(1n, fmt.emin - fmt.p - 2, resSign);
+        const stand = fmt.family === 'decfloat'
+          ? frac(resSign ? -1n : 1n, pow10(-(fmt.qmin - 2)))
+          : dyadic(1n, fmt.emin - fmt.p - 2, resSign);
         const round = roundFraction(stand, fmt, mode);
         round.inexact = true;
         const exactOp = { kind: 'finite', r: ZERO, approx: true, ziv: true, reliable: 0, beyond: true };
@@ -308,7 +342,7 @@ function fpPow(x, y, fmt, mode, nan) {
       return exactResult(r, fmt, mode);
     }
   }
-  return irrational((C) => C.pow(decOf(x)(C), decOf(y)(C)), fmt, mode, !isExactDyadic(x) || !isExactDyadic(y));
+  return irrational((C) => C.pow(decOf(x)(C), decOf(y)(C)), fmt, mode, !isExactInput(x) || !isExactInput(y));
 }
 
 /** Correctly rounded π in the format. */

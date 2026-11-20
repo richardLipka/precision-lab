@@ -525,6 +525,44 @@ export const EXAMPLES = [
     variables: [{ name: 'a', value: '1' }, { name: 'b', value: '0x1.002p-53' }],
     program: 's = a + b\nd = double(s)',
   },
+  {
+    id: 'decimalVsBinary',
+    group: 'hardware',
+    title: { en: 'Binary vs. decimal64 & fixed-point', cs: 'Dvojkový vs. decimal64 a pevná řádová čárka' },
+    blurb: {
+      en: 'Compare binary floating point (double) with IEEE 754 decimal64 (BID / DPD) and fixed-point DEC(18,4) / Q16.16. In base 10, 0.1 + 0.2 == 0.3 is exact — no representation error — yet 1/3 still repeats in every format. Adding 1e12 + 0.0001 stays exact in decimal64 and DEC(18,4), while 0.01 × 0.001 underflows to 0 in DEC(18,4) because fixed point has no floating exponent.',
+      cs: 'Porovnání dvojkové pohyblivé řádové čárky (double) s IEEE 754 decimal64 (BID / DPD) a pevnou řádovou čárkou DEC(18,4) / Q16.16. V desítkové soustavě platí 0.1 + 0.2 == 0.3 přesně — bez chyby reprezentace — ale 1/3 má periodu v každém formátu. Součet 1e12 + 0.0001 zůstane přesný v decimal64 i DEC(18,4), zatímco 0.01 × 0.001 v DEC(18,4) podteče na 0, protože pevná řádová čárka nemá pohyblivý exponent.',
+    },
+    lesson: {
+      en: 'Decimal formats eliminate base-2 representation errors of decimal fractions (0.1, 0.01), while fixed-point trades dynamic range for uniform absolute spacing Δ; neither prevents repeating fractions like 1/3 or cancellation.',
+      cs: 'Desítkové formáty odstraňují dvojkovou chybu reprezentace desetinných zlomků (0.1, 0.01) a pevná řádová čárka vyměňuje dynamický rozsah za rovnoměrný krok Δ; žádný z nich však nezabrání periodickým zlomkům typu 1/3 ani krácení.',
+    },
+    look: {
+      en: 'enable decimal64 (BID), decimal64 (DPD), Q16.16 and DEC(18,4) in Formats, then inspect 0.1 + 0.2 and the BID vs. DPD bit encodings in the step detail.',
+      cs: 'zapněte ve Formátech decimal64 (BID), decimal64 (DPD), Q16.16 a DEC(18,4) a pak v detailu kroku porovnejte 0.1 + 0.2 a bitové kódování BID vs. DPD.',
+    },
+    variables: [{ name: 'a', value: '0.1' }, { name: 'b', value: '0.2' }],
+    program: 'sum = a + b\neq = sum == 0.3\nthird = 1 / 3\nledger = 1e12 + 0.0001\ntiny = 0.01 * 0.001',
+  },
+  {
+    id: 'fixedOverflow',
+    group: 'hardware',
+    title: { en: 'Fixed-point overflow: saturation vs. wraparound', cs: 'Přetečení v pevné řádové čárce: saturace vs. přetečení mod 2ⁿ' },
+    blurb: {
+      en: 'Q16.16 stores signed numbers in [−32768, 32767.999985] with fixed step Δ = 2⁻¹⁶. Adding 20000 + 20000 = 40000 exceeds the range: under saturation (ARM DSP / ISO TR 18037 _Sat) it clamps to +32767.999985; under two’s-complement wraparound it wraps modulo 2³² to −25536 (wrong sign!). Even (20000 × 2) / 4 fails because the intermediate product overflows before dividing back into range.',
+      cs: 'Q16.16 ukládá čísla se znaménkem v [−32768, 32767.999985] s pevným krokem Δ = 2⁻¹⁶. Součet 20000 + 20000 = 40000 rozsah překročí: při saturaci (ARM DSP / ISO TR 18037 _Sat) se omezí na +32767.999985; při přetečení ve dvojkovém doplňku (mod 2³²) přeskočí na −25536 (opačné znaménko!). Selže i (20000 × 2) / 4, protože mezivýsledek přeteče dřív, než ho dělení vrátí do rozsahu.',
+    },
+    lesson: {
+      en: 'Fixed-point arithmetic has no ±∞: overflow either saturates (clamps magnitude) or wraps modulo 2ⁿ (flips sign). Always size intermediate accumulators or rescale before multiplying.',
+      cs: 'Aritmetika s pevnou řádovou čárkou nemá ±∞: přetečení buď saturuje (omezí velikost), nebo přeteče modulo 2ⁿ (změní znaménko). Mezivýsledky vyžadují širší akumulátor nebo včasné přeškálování.',
+    },
+    look: {
+      en: 'enable Q16.16 in Formats and toggle Fixed-point overflow between Saturation and Wraparound to watch sum and mid change.',
+      cs: 'zapněte Q16.16 ve Formátech a přepínejte přetečení pevné čárky mezi Saturací a Přetečením mod 2ⁿ u kroků sum a mid.',
+    },
+    variables: [{ name: 'a', value: '20000' }, { name: 'b', value: '20000' }],
+    program: 'sum = a + b\nmid = (a * 2) / 4\nsmall = 0.001 * 0.001',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = 'sum';

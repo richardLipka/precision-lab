@@ -751,4 +751,63 @@ describe('diagnosis wording, helpers, saved state and the step table', () => {
     subRow.querySelector('.vcell[data-fmt="binary64"]').click();
     expect(document.querySelector('#detail .b-subpad')).toBeTruthy();
   });
+
+  it('supports separate decimal64 (BID & DPD) formats, Q16.16 & DEC(18,4) fixed-point, and saturation/wraparound toggle', () => {
+    compare();
+    // Three grouped format fieldsets with BID and DPD as separate selections
+    const groups = [...document.querySelectorAll('#formats fieldset.fmt-group')];
+    expect(groups.length).toBe(3);
+    const toggleFmt = (id, on) => {
+      const cb = document.querySelector(`#formats input[data-fmt="${id}"]`);
+      expect(cb, id).toBeTruthy();
+      cb.checked = on;
+      cb.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    try {
+      toggleFmt('decimal64_bid', true);
+      toggleFmt('decimal64_dpd', true);
+      toggleFmt('q16_16', true);
+      toggleFmt('dec18_4', true);
+      pick('decimalVsBinary');
+
+      // 0.1 + 0.2 == 0.3 is exact in decimal64 BID, decimal64 DPD and DEC(18,4)
+      const eqRow = [...document.querySelectorAll('#steps tbody tr')].find((tr) => tr.textContent.includes('sum == 0.3'));
+      for (const id of ['decimal64_bid', 'decimal64_dpd', 'dec18_4']) {
+        expect(eqRow.querySelector(`.vcell[data-fmt="${id}"] .v`).textContent).toBe('1');
+      }
+
+      // BID vs DPD display their distinct 64-bit hardware encodings in Step Detail
+      const sumRow = [...document.querySelectorAll('#steps tbody tr')].find((tr) => tr.textContent.includes('a + b'));
+      sumRow.querySelector('.vcell[data-fmt="decimal64_bid"]').click();
+      expect(document.getElementById('detail').textContent).toContain('digit by digit');
+      expect(document.querySelector('#detail .b-comb')).toBeTruthy();
+      expect(document.querySelector('#detail .dpd-grid')).toBeNull();
+      sumRow.querySelector('.vcell[data-fmt="decimal64_dpd"]').click();
+      expect(document.querySelector('#detail .dpd-grid')).toBeTruthy();
+      expect(document.querySelectorAll('#detail .b-declet').length).toBeGreaterThanOrEqual(5);
+
+      // Fixed-point overflow radio toggle switches Q16.16 live between saturation and wraparound
+      pick('fixedOverflow');
+      const addRow = () => [...document.querySelectorAll('#steps tbody tr')].find((tr) => tr.textContent.includes('a + b'));
+      const satCell = addRow().querySelector('.vcell[data-fmt="q16_16"]');
+      expect(satCell.querySelector('.cause').textContent).toBe('saturated');
+      expect(satCell.querySelector('.v').textContent).toContain('32767.99998');
+
+      const wrapRadio = document.getElementById('ovf-wrap');
+      wrapRadio.checked = true;
+      wrapRadio.dispatchEvent(new Event('change', { bubbles: true }));
+      const wrapCell = addRow().querySelector('.vcell[data-fmt="q16_16"]');
+      expect(wrapCell.querySelector('.cause').textContent).toBe('wraparound');
+      expect(wrapCell.querySelector('.v').textContent).toContain('−25536');
+      wrapCell.click();
+      expect(document.getElementById('detail').textContent).toContain('modulo 2^32');
+    } finally {
+      const satRadio = document.getElementById('ovf-sat');
+      satRadio.checked = true;
+      satRadio.dispatchEvent(new Event('change', { bubbles: true }));
+      for (const id of ['decimal64_bid', 'decimal64_dpd', 'q16_16', 'dec18_4']) toggleFmt(id, false);
+      pick('sum');
+    }
+  });
 });

@@ -453,6 +453,20 @@ describe('automatic explainer truthfulness across edge cases and full example ma
     const dEx = explain(dr, dr.result, F.x87);
     expect(codes(dEx)[0]).toBe('cast.doubleRounding');
     expect(codes(dEx)).not.toContain('cast.what');
+
+    // Fixed-point overflow leads with fxp.saturate or fxp.wrap and suppresses irrelevant FP noise
+    for (const ovf of ['sat', 'wrap']) {
+      const fx = evaluate({ program: 's = 20000 + 20000', formats: [F.q16_16], mode: 'RNE', overflowMode: ovf });
+      const fxEx = explainStep(fx.steps[fx.result], fx.steps, fx.formats[0], 'RNE');
+      expect(codes(fxEx)[0]).toBe(ovf === 'sat' ? 'fxp.saturate' : 'fxp.wrap');
+      expect(codes(fxEx)).not.toContain('fxp.roundAmount');
+      expect(codes(fxEx)).not.toContain('op.alignShift');
+    }
+    // Decimal64 explains 1/3 using base-10 repeating expansion (not binary)
+    const dThird = evaluate({ program: '1/3', formats: [F.decimal64_bid], mode: 'RNE' });
+    const dtEx = explainStep(dThird.steps[dThird.result], dThird.steps, F.decimal64_bid, 'RNE');
+    expect(codes(dtEx)).toContain('op.divPeriodicDec');
+    expect(codes(dtEx)).not.toContain('op.divPeriodic');
   });
 
   it('holds universal explainer invariants across built-in examples, all 6 formats and all 5 rounding modes', () => {
