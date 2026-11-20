@@ -62,7 +62,7 @@ export function createRewritePanel(host, api) {
       <div class="panel"><div class="section-title"><h2 data-r="tree"></h2></div><div id="rw-tree" class="ast-tree" role="tree"></div></div>
       <div class="panel"><div class="section-title"><h2 data-r="rules"></h2></div><div id="rw-node"></div><div id="rw-rules" class="rw-rules"></div></div>
     </div>
-    <div class="panel"><div class="section-title"><h2 data-r="compare"></h2></div><div class="table-scroll"><table class="steps rw-compare" id="rw-compare"></table></div><div id="rw-legend"></div></div>
+    <div class="panel"><div class="section-title"><h2 id="rw-compare-heading" data-r="compare"></h2></div><div class="table-scroll" tabindex="0" role="region" aria-labelledby="rw-compare-heading"><table class="steps rw-compare" id="rw-compare"></table></div><div id="rw-legend"></div></div>
     <div class="panel"><div class="section-title"><h2 data-r="history"></h2></div><ol id="rw-history" class="rw-history"></ol>
       <div class="rw-programs"><div><h3 data-r="original"></h3><pre id="rw-before" class="mono"></pre></div><div><h3 data-r="rearranged"></h3><pre id="rw-after" class="mono"></pre></div></div></div>`;
 
@@ -233,7 +233,7 @@ export function createRewritePanel(host, api) {
     }
     let check;
     try {
-      check = sameMeaning(s.current, next, api.config().variables);
+      check = sameMeaning(s.current, next, api.config().variables, api.config().refDigits ?? 60);
     } catch (e) {
       error = errorText(e);
       render();

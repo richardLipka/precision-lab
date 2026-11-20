@@ -137,9 +137,9 @@ describe('page', () => {
     expect(detail).toContain('correct to the full precision of the format');
     expect(detail).not.toMatch(/Result: 16\.[1-9] correct/);
     expect(detail).toContain('capped at what the format holds');
-    // ulp and u are defined where the student meets them; the gap is marked as 1 ulp
-    expect(detail).toContain('is the gap between the two representable numbers around the exact result');
-    expect(detail).toContain('so its relative error is at most the unit roundoff u = 2^−p');
+    // ulp and u are shown concisely; the gap is marked as 1 ulp
+    expect(detail).toContain('1 ulp =');
+    expect(detail).toContain('rel. error ≤ u = 2^−p');
     expect(document.querySelector('#detail .nl-ulp-text').textContent).toMatch(/^gap = 1 ulp = /);
     // the summary diagnosis never claims more digits than the format holds
     expect(document.getElementById('diagnosis').textContent).not.toMatch(/16\.[1-9] of ≈ 16\.0/);
@@ -176,7 +176,7 @@ describe('page', () => {
     expect(document.getElementById('diagnosis').textContent).toMatch(/#6 .*cancellation.*← information lost at #5 .*absorption/);
     pick('loop');
     const loop = document.getElementById('diagnosis').textContent;
-    expect(loop).toContain('the small rounding errors added up');
+    expect(loop).toContain('small rounding errors added up');
     expect(loop).not.toContain('only ordinary rounding');
     pick('special');
     expect(document.getElementById('diagnosis').textContent).toContain('the result is NaN');
@@ -198,7 +198,7 @@ describe('page', () => {
     const what = document.querySelector('#detail .what').textContent;
     expect(what).toContain('The true values are equal, but the stored values differ by');
     expect(what).toContain('they are neighbouring numbers of this format');
-    expect(what).toContain('Compare with a tolerance instead');
+    expect(what).toContain('compare with a tolerance instead');
     expect(document.getElementById('detail').textContent).toContain('A comparison is not rounded');
     expect(document.querySelector('#detail .binary').textContent).toContain('A comparison is not rounded: its result is exactly 1 (true) or 0 (false).');
     // the tolerance test (last row) fails in float: the advice says the tolerance is too small
@@ -263,12 +263,12 @@ describe('guidance and consistency', () => {
     compare();
     pick('sum');
     const diag = text('diagnosis');
-    expect(diag).toMatch(/float: exact result, although earlier values were rounded \(#0, #1, #2, #3\)/);
-    expect(diag).toContain('that is luck');
+    expect(diag).toMatch(/float: exact, though earlier steps rounded \(#0, #1, #2, #3\)/);
+    expect(diag).toContain('luck');
     // the intermediate c is reported too, with float's 0.3 marked as inexact, next to the final test c == 0.3
     expect([...document.querySelectorAll('#summary .sumtab tbody th .mono')].map((e) => e.textContent)).toEqual(['c', 'c == 0.3']);
     expect(document.querySelector('#summary .sum-cell[data-step="2"][data-fmt="binary32"] .badge').className).not.toContain('q-exact');
-    expect(text('summary')).toContain('shortest decimal that converts back to the same stored binary number');
+    expect(text('summary')).toContain('shortest decimal that converts back to the stored binary value');
   });
 
   it('does not call x − x luck: equal operands cancel their errors by construction', async () => {
@@ -303,7 +303,7 @@ describe('guidance and consistency', () => {
     const legend = text('steps-legend');
     expect(legend).toContain('≥ 85 %');
     expect(legend).toContain('40–85 %');
-    expect(legend).toContain('below 40 %');
+    expect(legend).toContain('< 40 %');
     expect(legend).toContain('OVF overflow');
     expect(legend).toContain('INV invalid operation');
     expect(legend).toContain('rounded up / down in this step');
@@ -405,13 +405,16 @@ describe('guidance and consistency', () => {
     }
   });
 
-  it('shows the concrete bits first, the formal notation last, with the binary point and the tie rule', () => {
+  it('shows the concrete bits first, the formal notation last (collapsed), with the binary point and the tie rule', () => {
     compare();
     pick('sum');
     document.querySelector('.vcell[data-step="2"][data-fmt="binary64"]').click();
     const heads = [...document.querySelectorAll('#detail .binary h4')].map((h) => h.textContent);
     expect(heads[0]).toContain('Operands as stored');
-    expect(heads[heads.length - 1]).toBe('Formal notation');
+    const fxFold = document.querySelector('#detail .binary details.fx-fold');
+    expect(fxFold).toBeTruthy();
+    expect(fxFold.open).toBe(false);
+    expect(fxFold.querySelector('summary').textContent).toBe('Formal notation');
     // 0.1 + 0.2 lies below 1: the aligned view still draws the binary point
     expect(document.querySelectorAll('#detail .bin-table .bin-point').length).toBeGreaterThan(0);
     const decision = document.querySelector('#detail .bin-decision').textContent;
@@ -549,13 +552,15 @@ describe('diagnosis wording, helpers, saved state and the step table', () => {
     await new Promise((r) => setTimeout(r, 450));
   };
 
-  it('accumulated rounding: the distance to the best result is counted in representable numbers, and correct digits are defined', () => {
+  it('accumulated rounding: the distance to the best result is counted in representable numbers, and correct digits are defined once', () => {
     compare();
     pick('loop');
     const diag = text('diagnosis');
-    expect(diag).toContain('The true value rounded once would be 1, but the result is 0.9999999999999999: its neighbour');
+    expect(diag).toContain('true value rounded once would be 1, result is 0.9999999999999999 (its neighbour)');
     expect(diag).not.toMatch(/0\.50 ulp from the true value/);
     expect(diag).toContain('0.9999999999999999 agrees with 1 to about 16 digits');
+    // Definition is shown once at the bottom, never repeated per format bullet
+    expect(diag.split('0.9999999999999999 agrees with 1').length - 1).toBe(1);
     expect(document.querySelector('#diagnosis .diag-digits').getAttribute('title')).toContain('−log₁₀ of the relative error');
   });
 
@@ -575,8 +580,8 @@ describe('diagnosis wording, helpers, saved state and the step table', () => {
     compare();
     pick('assoc');
     const left = [...document.querySelectorAll('#diagnosis .diag-group')].find((g) => g.querySelector('summary .mono').textContent === 'left');
-    expect(left.textContent).toMatch(/float: exact result, although earlier values were rounded .*cancel by construction/);
-    expect(left.textContent).not.toContain('that is luck');
+    expect(left.textContent).toMatch(/float: exact by construction, though earlier steps rounded/);
+    expect(left.textContent).not.toContain('luck');
   });
 
   it('a value in the step table may wrap only before its exponent', () => {
@@ -609,5 +614,141 @@ describe('diagnosis wording, helpers, saved state and the step table', () => {
     expect(diag).not.toContain('and so is the true value');
     expect(diag).not.toMatch(/: exact result/);
     expect(text('steps')).toContain('0 < |x| < 10^−100000');
+    // formal notation of exp(-1000000) does not claim δ = 0
+    const expRow = [...document.querySelectorAll('#steps tbody tr')].find((tr) => tr.textContent.includes('exp(-1000000)'));
+    expRow.querySelector('.vcell[data-fmt="binary64"]').click();
+    const fx = document.querySelector('#detail .binary').textContent;
+    expect(fx).not.toContain('δ = 0');
+    expect(fx).toContain('beyond the 10^±100000 range');
+  });
+
+  it('detail view handles tiny irrational steps, cast ulp/dot/overflow, exact zero and escaping cleanly', async () => {
+    compare();
+    const clickRow = (needle, fmt = 'binary64') => {
+      const row = [...document.querySelectorAll('#steps tbody tr')].find((tr) => tr.textContent.includes(needle));
+      expect(row, `row containing ${needle}`).toBeTruthy();
+      const c = row.querySelector(`.vcell[data-fmt="${fmt}"]`);
+      expect(c, `cell ${fmt} for ${needle}`).toBeTruthy();
+      c.click();
+    };
+
+    // 1. doubleRound x87 cast: 0.5 ulp (not 1024 ulp), heading names binary64, chosen dot highlighted
+    pick('doubleRound');
+    clickRow('double(s)', 'x87');
+    const drDetail = document.getElementById('detail');
+    expect(drDetail.textContent).toContain('Rounding to binary64 (double)');
+    expect(drDetail.textContent).toContain('= 0.5 ulp');
+    expect(drDetail.textContent).not.toContain('1024 ulp');
+    expect(drDetail.querySelector('.nl-chosen')).toBeTruthy();
+
+    // 2. onecos in bfloat16 & exp(1e-30) in binary64: numberLine renders without crashing or NaN coordinates
+    pick('onecos');
+    const bf = document.querySelector('#formats input[data-fmt="bfloat16"]');
+    expect(bf).toBeTruthy();
+    if (!bf.checked) { bf.checked = true; bf.dispatchEvent(new Event('change', { bubbles: true })); }
+    clickRow('cos(x)', 'bfloat16');
+    const nlSvg = document.querySelector('#detail .numline svg');
+    if (nlSvg) expect(nlSvg.innerHTML).not.toContain('NaN');
+    bf.checked = false;
+    bf.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await setProgram('exp(1e-30)');
+    clickRow('exp(1e-30)', 'binary64');
+    expect(document.getElementById('detail').innerHTML).not.toContain('NaN');
+
+    // 3. half(1e5) overflow names binary16 (half), not binary64 (double)
+    await setProgram('half(1e5)');
+    clickRow('half(1e5)', 'binary64');
+    expect(document.getElementById('detail').textContent).toContain('largest finite binary16 (half)');
+
+    // 4. exact 0 literal does not say "0 significant digits"
+    await setProgram('0');
+    const rows0 = [...document.querySelectorAll('#steps tbody tr')];
+    rows0.at(-1).querySelector('.vcell[data-fmt="binary64"]').click();
+    expect(document.getElementById('detail').textContent).not.toContain('0 significant digits');
+
+    // 5. 1e100 - 1e100 shows aligned bit table (not "too wide")
+    await setProgram('1e100 - 1e100');
+    clickRow('1e100 - 1e100', 'binary64');
+    expect(document.querySelector('#detail .binary').textContent).toContain('aligned to a common exponent');
+
+    // 6. a < b escapes '<' in formalHtml so the operator renders visibly
+    await setProgram('1 < 2');
+    clickRow('1 < 2', 'binary64');
+    expect(document.querySelector('#detail .fx-line').textContent).toContain('<');
+
+    // 7. equality in double RNE says true difference is large enough, not luck
+    pick('equality');
+    const eqDiag = text('diagnosis');
+    expect(eqDiag).toContain('true difference between the compared values is large enough');
+    expect(eqDiag).not.toMatch(/double:.*that is luck/);
+
+    // 8. sweep table and step chart use localized digits label in Czech (not hardcoded ' d') and relText in rel mode
+    const { runSweep } = await import('../src/engine/sweep.js');
+    const OrigWorker = globalThis.Worker;
+    globalThis.Worker = class {
+      postMessage(msg) {
+        this.onmessage?.({ data: { type: 'done', out: runSweep(msg) } });
+      }
+      terminate() {}
+    };
+    try {
+      pick('sum');
+      document.querySelector('.view-tab[data-view=sweep]').click();
+      document.getElementById('lang').click();
+      document.getElementById('sw-spec').value = '24, 53';
+      document.getElementById('sw-run').click();
+      const swTable = document.getElementById('sw-table').textContent;
+      expect(swTable).toContain('č.');
+      expect(swTable).not.toMatch(/\d d\b/);
+      const swMeasure = document.getElementById('sw-measure');
+      swMeasure.value = 'rel';
+      swMeasure.dispatchEvent(new Event('change'));
+      expect(document.getElementById('sw-chart-p').innerHTML).toContain('svg');
+    } finally {
+      globalThis.Worker = OrigWorker;
+      document.getElementById('lang').click();
+      compare();
+    }
+  });
+
+  it('highlights visual proofs (cancellation prefix, p-bit cutoff, comparison bit diff, subnormal padding) and keeps disclosures collapsed', async () => {
+    compare();
+    // Static setup disclosures start collapsed
+    for (const d of document.querySelectorAll('.setup details.info-fold')) expect(d.open).toBe(false);
+    // Sweep table summary contains no heading inside <summary>
+    expect(document.querySelector('#sw-table-wrap > summary h2')).toBeNull();
+
+    // Summary cells display primary cause chips alongside badges
+    pick('assoc');
+    expect(document.querySelector('#summary .sum-cell[data-step="6"][data-fmt="binary64"] .cause').textContent).toContain('cancellation');
+
+    // Absorption: aligned view marks the p-bit cutoff and number line renders BEFORE bit-by-bit
+    document.querySelector('.vcell[data-step="5"][data-fmt="binary64"]').click();
+    expect(document.querySelector('#detail .bin-cut')).toBeTruthy();
+    const sections = [...document.querySelectorAll('#detail > section')];
+    const roundIdx = sections.findIndex((s) => s.classList.contains('det-round'));
+    const binIdx = sections.findIndex((s) => s.classList.contains('binary'));
+    expect(roundIdx).toBeGreaterThan(-1);
+    expect(roundIdx).toBeLessThan(binIdx);
+    // Raw stored bit pattern & exact decimal starts collapsed
+    expect(document.querySelector('#detail > details.detail-fold').open).toBe(false);
+
+    // Cancellation: aligned view highlights cancelled leading bits
+    pick('cancel');
+    const cancCell = [...document.querySelectorAll('#steps tbody tr')].find((tr) => tr.textContent.includes('(1 + x) - 1')).querySelector('.vcell[data-fmt="binary64"]');
+    cancCell.click();
+    expect(document.querySelectorAll('#detail .bin-cancelled').length).toBeGreaterThan(10);
+
+    // Comparison: differing bit is highlighted between stored operands
+    pick('equality');
+    document.querySelector('.vcell[data-step="5"][data-fmt="binary64"]').click();
+    expect(document.querySelectorAll('#detail .bit-diff').length).toBeGreaterThanOrEqual(2);
+
+    // Subnormal: leading zero bits in the fraction are dimmed with .b-subpad
+    await setProgram('0x1p-1050');
+    const subRow = [...document.querySelectorAll('#steps tbody tr')].at(-1);
+    subRow.querySelector('.vcell[data-fmt="binary64"]').click();
+    expect(document.querySelector('#detail .b-subpad')).toBeTruthy();
   });
 });

@@ -332,9 +332,10 @@ export function exactEqual(x, y) {
   if (x.kind === 'nan') return true;
   if (x.kind === 'inf') return x.sign === y.sign;
   if (!x.approx && !y.approx) return x.r.equals(y.r);
-  const diff = x.r.sub(y.r).abs();
-  if (diff.n === 0n) return true;
   const digits = Math.min(x.approx ? x.reliable : 1e9, y.approx ? y.reliable : 1e9);
+  if (digits <= EQUAL_SLACK_DIGITS) return false;
+  const diff = x.r.sub(y.r).abs();
+  if (diff.n === 0n) return !x.beyond && !y.beyond;
   const scale = Math.max(log10Abs(x.r), log10Abs(y.r));
   return log10Abs(diff) - scale < -(digits - EQUAL_SLACK_DIGITS);
 }
@@ -343,8 +344,8 @@ export function exactEqual(x, y) {
  * Exact (true) values of every named variable and of the result, for two
  * programs. Returns {ok, differences:[name]} — ok means the meaning is unchanged.
  */
-export function sameMeaning(before, after, variables) {
-  const opts = { variables, formats: [], mode: 'RNE' };
+export function sameMeaning(before, after, variables, refDigits = 60) {
+  const opts = { variables, formats: [], mode: 'RNE', refDigits };
   const a = evaluate({ ...opts, program: before });
   const b = evaluate({ ...opts, program: after });
   const differences = [];

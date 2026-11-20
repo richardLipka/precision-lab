@@ -166,6 +166,52 @@ describe('comparison explanations', () => {
     expect(dg.losses[0].step.op).toBe('==');
     expect(dg.losses[0].source.id).toBe(2);
   });
+
+  it('beyond-range stand-ins do not leak as exact 0 or exact ∞ in comparisons or arithmetic', () => {
+    const inv = run('y = exp(1000000)\n1 / y', '', [F.binary64]);
+    expect(exactOf(inv).beyond).toBe(true);
+    expect(codes(explain(inv, 'binary64'))).toContain('verdict.beyond');
+    expect(codes(explain(inv, 'binary64'))).not.toContain('verdict.exact');
+
+    const eqZero = run('y = exp(-1000000)\ny == 0', '', [F.binary64]);
+    expect(exactOf(eqZero).r.toFraction()).toBe('0'); // exp(-10^6) > 0, never == 0
+    expect(num(res(eqZero, 'binary64'))).toBe(1); // double underflows to 0
+    expect(explain(eqZero, 'binary64').cause.code).toBe('cmpWrong');
+
+    const gtZero = run('y = exp(-1000000)\ny > 0', '', [F.binary64]);
+    expect(exactOf(gtZero).r.toFraction()).toBe('1');
+    expect(num(res(gtZero, 'binary64'))).toBe(0);
+
+    const eqInf = run('y = exp(1000000)\ny == inf', '', [F.binary64]);
+    expect(exactOf(eqInf).r.toFraction()).toBe('0'); // finite beyond-huge != +inf
+    expect(num(res(eqInf, 'binary64'))).toBe(1);
+
+    const ltInf = run('y = exp(1000000)\ny < inf', '', [F.binary64]);
+    expect(exactOf(ltInf).r.toFraction()).toBe('1');
+
+    // Cast of a beyond-tiny stand-in under RU does not emit bogus double-rounding
+    const castBeyond = evaluate({ program: 'y = exp(-1000000)\nfloat(y)', variables: [], formats: [F.binary64], mode: 'RU' });
+    const cEx = explainStep(castBeyond.steps[castBeyond.result], castBeyond.steps, F.binary64, 'RU');
+    expect(codes(cEx)).not.toContain('cast.doubleRounding');
+    expect(codes(cEx)).not.toContain('cast.twiceSame');
+    expect(codes(cEx)).toContain('verdict.beyond');
+  });
+
+  it('marks irrational comparisons that agree within reference digits as undecided', () => {
+    const eq = run('1 + exp(-1000) == 1', '', [F.binary64]);
+    expect(exactOf(eq).undecided).toBe(true);
+    expect(codes(explain(eq, 'binary64'))).toContain('cmp.undecided');
+    const gt = run('1 + exp(-1000) > 1', '', [F.binary64]);
+    expect(exactOf(gt).undecided).toBe(true);
+  });
+
+  it('nested cast half(float(x)) reports the previous cast precision p = 24, not the column precision', () => {
+    const r = run('y = float(x)\nhalf(y)', 'x=0.1', [F.binary64]);
+    const ex = explain(r, 'binary64');
+    const ts = ex.items.find((i) => i.code === 'cast.twiceSame' || i.code === 'cast.doubleRounding');
+    expect(ts).toBeTruthy();
+    expect(ts.params.p).toBe(24);
+  });
 });
 
 describe('format casts', () => {

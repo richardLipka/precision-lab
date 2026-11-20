@@ -60,8 +60,79 @@ export function rawFraction(s, n, d) {
 
 /** Exact sum of two dyadic numbers given as signed BigInt m and exponent q. */
 export function dyadicSum(m1, q1, m2, q2) {
+  if (m1 === 0n) return dyadic(m2, q2);
+  if (m2 === 0n) return dyadic(m1, q1);
   const q = Math.min(q1, q2);
   return dyadic((m1 << BigInt(q1 - q)) + (m2 << BigInt(q2 - q)), q);
+}
+
+function bigGcd(a, b) {
+  while (b !== 0n) { const t = a % b; a = b; b = t; }
+  return a;
+}
+
+/** Exact reduced r * 2^p for any reduced Fraction r, without running general gcd. */
+export function scalePow2(r, p) {
+  if (r.n === 0n || p === 0) return r;
+  if (p > 0) {
+    const tz = Math.min(trailingZeros(r.d), p);
+    return rawFraction(r.s, r.n << BigInt(p - tz), r.d >> BigInt(tz));
+  }
+  const s = -p;
+  const tz = Math.min(trailingZeros(r.n), s);
+  return rawFraction(r.s, r.n >> BigInt(tz), r.d << BigInt(s - tz));
+}
+
+/**
+ * Exact reduced a − x when `a` is dyadic (a.d = 2^k) and `x` is any reduced
+ * fraction, avoiding O(bits²) BigInt gcd on wide exact denominators: because
+ * gcd(x.n, x.d) = 1, no odd prime dividing x.d can divide a·x.d − x.n·2^k.
+ * Falls back to standard Fraction.sub when `a` is not dyadic.
+ */
+export function dyadicSub(a, x) {
+  if ((a.d & (a.d - 1n)) !== 0n) return a.sub(x);
+  if (a.n === 0n) return x.neg();
+  if (x.n === 0n) return a;
+  const k = bitLength(a.d) - 1;
+  const t = trailingZeros(x.d);
+  const m = Math.min(k, t);
+  const kp = k - m;
+  const N = a.s * a.n * (x.d >> BigInt(m)) - x.s * (x.n << BigInt(kp));
+  if (N === 0n) return ZERO;
+  const s = N < 0n ? -1n : 1n;
+  const M = N < 0n ? -N : N;
+  const c = Math.min(trailingZeros(M), Math.max(k, t));
+  return rawFraction(s, M >> BigInt(c), (x.d << BigInt(kp)) >> BigInt(c));
+}
+
+/**
+ * Exact reduced `{ err: a − x, rel: |a − x| / |x| }` when `a` is dyadic and
+ * `x` is any reduced fraction. Since gcd(M, x.n) = gcd(a.n, x.n) where a.n is
+ * a short FP significand, the relative error also avoids wide BigInt gcd.
+ */
+export function dyadicDiff(a, x) {
+  if ((a.d & (a.d - 1n)) !== 0n) {
+    const err = a.sub(x);
+    return { err, rel: x.n === 0n ? null : err.abs().div(x.abs()) };
+  }
+  if (a.n === 0n) return { err: x.neg(), rel: x.n === 0n ? ZERO : ONE };
+  if (x.n === 0n) return { err: a, rel: null };
+  const k = bitLength(a.d) - 1;
+  const t = trailingZeros(x.d);
+  const m = Math.min(k, t);
+  const kp = k - m;
+  const N = a.s * a.n * (x.d >> BigInt(m)) - x.s * (x.n << BigInt(kp));
+  if (N === 0n) return { err: ZERO, rel: ZERO };
+  const s = N < 0n ? -1n : 1n;
+  const M = N < 0n ? -N : N;
+  const c = Math.min(trailingZeros(M), Math.max(k, t));
+  const err = rawFraction(s, M >> BigInt(c), (x.d << BigInt(kp)) >> BigInt(c));
+  const g = a.n > 1n ? bigGcd(a.n, x.n % a.n) : 1n;
+  const M0 = g === 1n ? M : M / g;
+  const xn0 = g === 1n ? x.n : x.n / g;
+  const tz = Math.min(trailingZeros(M0), kp);
+  const rel = rawFraction(1n, M0 >> BigInt(tz), xn0 << BigInt(kp - tz));
+  return { err, rel };
 }
 
 export function isZero(r) {
@@ -87,7 +158,7 @@ export const exact = {
 
 function sgnOf(v) {
   if (v.kind === 'inf') return v.sign;
-  if (v.kind === 'finite') return isNegative(v.r) ? 1 : 0;
+  if (v.kind === 'finite') return isNegative(v.r) || v.negZero ? 1 : 0;
   return 0;
 }
 
@@ -174,7 +245,10 @@ export function parseLiteral(text) {
     const a = parseLiteral(fm[1]);
     const b = parseLiteral(fm[2]);
     if (!a || !b) return null;
-    return exactDiv(a, b);
+    if (b.kind === 'finite' && b.r.n === 0n) return null;
+    const out = exactDiv(a, b);
+    if (out.kind === 'finite' && out.r.n === 0n) return exact.finite(ZERO, (sgnOf(a) ^ sgnOf(b)) === 1);
+    return out;
   }
   let m = HEX_RE.exec(s);
   if (m && (m[2] || m[3])) {

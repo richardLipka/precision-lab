@@ -53,7 +53,7 @@ export function createSweepPanel(host, api) {
           <select id="sw-measure"><option value="abs"></option><option value="rel"></option><option value="digits"></option></select></label></div>
       <p class="muted small" data-s="chartPsub"></p>
       <div id="sw-chart-p"></div>
-      <p class="muted small" id="sw-chart-note"></p>
+      <details class="info-fold"><summary data-s="chartAbout"></summary><p class="muted small" id="sw-chart-note"></p></details>
     </div>
     <div class="panel">
       <div class="section-title"><h2 data-s="chartSteps"></h2>
@@ -61,7 +61,7 @@ export function createSweepPanel(host, api) {
           <select id="sw-lines"><option>5</option><option>10</option><option>20</option><option>40</option></select></label></div>
       <div id="sw-chart-steps"></div>
     </div>
-    <div class="panel"><details id="sw-table-wrap"><summary><h2 class="inline-h" data-s="table"></h2></summary><div id="sw-legend"></div><div class="table-scroll"><table class="steps sweep-table" id="sw-table"></table></div></details></div>`;
+    <div class="panel"><details id="sw-table-wrap"><summary><span class="summary-h" data-s="table"></span></summary><div id="sw-legend"></div><div class="table-scroll" tabindex="0" role="region" aria-label="Sweep table"><table class="steps sweep-table" id="sw-table"></table></div></details></div>`;
 
   const $ = (id) => host.querySelector('#' + id);
   $('sw-spec').value = st.spec;
@@ -279,13 +279,17 @@ export function createSweepPanel(host, api) {
           if (f.status === 'exact') return t('sweep.exactPoint');
           if (f.digits == null) return t('sweep.notComparable');
           const dg = digitsText(digitsInfo(f.digits, fullDigits(rows[i].p)));
-          return measure === 'digits' ? dg : `${f.absText ?? ''} · ${dg} d`;
+          if (measure === 'digits') return dg;
+          const errTxt = measure === 'rel' ? f.relText : f.absText;
+          return `${errTxt ?? ''} · ${t('badge.digits', { d: dg })}`;
         }
         if (s.id === 'best') {
           if (f.bestDigits === Infinity) return t('sweep.exactPoint');
           if (f.bestDigits == null && f.bestText == null) return '—';
           const dg = f.bestDigits == null ? '—' : digitsText(digitsInfo(f.bestDigits, fullDigits(rows[i].p)));
-          return measure === 'digits' ? dg : `${f.bestText} · ${dg} d`;
+          if (measure === 'digits') return dg;
+          const errTxt = measure === 'rel' ? f.bestRelText : f.bestText;
+          return `${errTxt ?? '—'} · ${t('badge.digits', { d: dg })}`;
         }
         return v == null ? '—' : measure === 'digits' ? v.toFixed(1) : `1e${v.toFixed(1)}`;
       },

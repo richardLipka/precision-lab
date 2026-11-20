@@ -5,11 +5,11 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { init } from 'gmp-wasm';
-import { FORMATS, makeFormat, roundFraction, encode, fpToFraction, fp } from '../src/engine/ieee.js';
-import { fpFunction } from '../src/engine/fpfunc.js';
+import { FORMATS, makeFormat, roundFraction, encode, fpToFraction, fp, fpEquals } from '../src/engine/ieee.js';
+import { fpFunction, fpPi } from '../src/engine/fpfunc.js';
 import { evaluate } from '../src/engine/evaluator.js';
 import { exactFunction, setRealDigits, exactRoot } from '../src/engine/real.js';
-import { frac, exact, Fraction } from '../src/engine/rational.js';
+import { frac, exact, Fraction, dyadic } from '../src/engine/rational.js';
 import { compareToExact } from '../src/engine/metrics.js';
 import { EXAMPLES } from '../src/ui/examples.js';
 
@@ -82,6 +82,60 @@ describe('functions in binary64 vs JavaScript Math', () => {
     expect(toDouble(fpFunction('pow', [fromDouble(2), fromDouble(0.5)], F.binary64, 'RNE').value)).toBe(Math.SQRT2);
     expect(toDouble(fpFunction('pow', [fromDouble(1.1), fromDouble(10)], F.binary64, 'RNE').value)).toBe(Number('2.5937424601000023'));
     expect(fpFunction('pow', [fromDouble(-8), fromDouble(1 / 3)], F.binary64, 'RNE').flags.invalid).toBe(true);
+    // IEEE 754-2019 §9.2.1 special pow cases
+    expect(toDouble(fpFunction('pow', [fp.nan(), fp.zero(0)], F.binary64, 'RNE').value)).toBe(1);
+    expect(toDouble(fpFunction('pow', [fp.nan(), fp.zero(1)], F.binary64, 'RNE').value)).toBe(1);
+    expect(toDouble(fpFunction('pow', [fromDouble(1), fp.nan()], F.binary64, 'RNE').value)).toBe(1);
+    // (-1)^(huge odd int) is exact -1 without falling back to irrational decimal.js
+    const m1 = fpFunction('pow', [fromDouble(-1), fromDouble(10000001)], F.binary64, 'RNE');
+    expect(toDouble(m1.value)).toBe(-1);
+    expect(m1.flags.inexact).toBe(false);
+    // binary128 |x| vs 1 comparison for y = ±inf must not collapse to JS double 1
+    const onePlus = roundFraction(dyadic((1n << 100n) + 1n, -100), F.binary128, 'RNE').value;
+    const oneMinus = roundFraction(dyadic((1n << 100n) - 1n, -100), F.binary128, 'RNE').value;
+    expect(fpFunction('pow', [onePlus, fp.inf(0)], F.binary128, 'RNE').value).toMatchObject({ kind: 'inf', sign: 0 });
+    expect(fpFunction('pow', [oneMinus, fp.inf(0)], F.binary128, 'RNE').value).toMatchObject({ kind: 'zero', sign: 0 });
+    expect(fpFunction('pow', [onePlus, fp.inf(1)], F.binary128, 'RNE').value).toMatchObject({ kind: 'zero', sign: 0 });
+    expect(fpFunction('pow', [oneMinus, fp.inf(1)], F.binary128, 'RNE').value).toMatchObject({ kind: 'inf', sign: 0 });
+    // Large integer powers overflow in O(1) without allocating multi-megabyte BigInts
+    const t0 = performance.now();
+    const big128 = fpFunction('pow', [roundFraction(dyadic(1n, 16000), F.binary128, 'RNE').value, fromDouble(15000, F.binary128)], F.binary128, 'RNE');
+    expect(big128.value.kind).toBe('inf');
+    expect(big128.flags.overflow).toBe(true);
+    expect(performance.now() - t0).toBeLessThan(200);
+  });
+
+  it('tiny arguments resolve exact directed rounding without hitting precision limits', () => {
+    // cos(1e-8) in bfloat16 resolves below < exactOp < above (no gap = 0)
+    const cb = fpFunction('cos', [roundFraction(new Fraction(1, 1e8), F.bfloat16, 'RNE').value], F.bfloat16, 'RNE');
+    expect(cb.uncertain).toBe(false);
+    expect(cb.flags.inexact).toBe(true);
+    expect(fpEquals(cb.round.below, cb.round.above)).toBe(false);
+    // sin/tan/atan/exp(2^-1000) in binary64 across all 5 rounding modes
+    const x = roundFraction(dyadic(1n, -1000), F.binary64, 'RNE').value;
+    const pred = roundFraction(dyadic((1n << 53n) - 1n, -1053), F.binary64, 'RNE').value;
+    const succ = roundFraction(dyadic((1n << 52n) + 1n, -1052), F.binary64, 'RNE').value;
+    const one = fromDouble(1);
+    const oneSucc = fromDouble(1 + 2 ** -52);
+    for (const [fn, mode, want] of [
+      ['sin', 'RNE', x], ['sin', 'RU', x], ['sin', 'RD', pred], ['sin', 'RZ', pred],
+      ['tan', 'RNE', x], ['tan', 'RU', succ], ['tan', 'RD', x], ['tan', 'RZ', x],
+      ['atan', 'RU', x], ['atan', 'RD', pred],
+      ['exp', 'RNE', one], ['exp', 'RU', oneSucc], ['exp', 'RD', one], ['exp', 'RZ', one],
+    ]) {
+      const r = fpFunction(fn, [x], F.binary64, mode);
+      expect(r.uncertain, `${fn} ${mode}`).toBe(false);
+      expect(fpEquals(r.value, want), `${fn} ${mode}`).toBe(true);
+    }
+    // binary128 exp(2^-16000) under RU rounds strictly above 1
+    const qx = roundFraction(dyadic(1n, -16000), F.binary128, 'RNE').value;
+    const qExp = fpFunction('exp', [qx], F.binary128, 'RU');
+    expect(qExp.uncertain).toBe(false);
+    expect(fpToFraction(qExp.value).equals(dyadic((1n << 112n) + 1n, -112))).toBe(true);
+    // smallest binary64 subnormal sin(2^-1074) under RD flushes to 0, under RNE/RU stays 2^-1074
+    const sub = roundFraction(dyadic(1n, -1074), F.binary64, 'RNE').value;
+    expect(fpFunction('sin', [sub], F.binary64, 'RD').value.kind).toBe('zero');
+    expect(fpEquals(fpFunction('sin', [sub], F.binary64, 'RU').value, sub)).toBe(true);
   });
 
   it('special values', () => {
@@ -140,6 +194,36 @@ describe('functions in wide formats vs GNU MPFR', () => {
       }
     });
   }
+
+  it('high-condition-number inputs match MPFR to 0 ulp (sin(pi), cos(pi/2), ln(1+eps), pow(1+eps, 1/eps), large trig)', () => {
+    const mpfrCheck = (name, args, fmt) => {
+      const ours = fpFunction(name, args, fmt, 'RNE');
+      expect(ours.uncertain, `${fmt.id} ${name}`).toBe(false);
+      const mpArgs = args.map((a) => {
+        const xr = fpToFraction(a);
+        return ctx.Float(ctx.Rational((xr.s * xr.n).toString(), xr.d.toString()), { precisionBits: fmt.p + 200 });
+      });
+      const raw = name === 'pow' ? mpArgs[0].pow(mpArgs[1]) : mpArgs[0][name]();
+      const ref = ctx.Float(raw, { precisionBits: fmt.p, roundingMode: 0 });
+      const refVal = parseBin(ref.toString(2));
+      expect(fpToFraction(ours.value).equals(refVal), `${fmt.id} ${name}`).toBe(true);
+    };
+    for (const fmt of FORMATS) {
+      const piV = fpPi(fmt, 'RNE').value;
+      const halfPi = roundFraction(fpToFraction(piV).div(2), fmt, 'RNE').value;
+      mpfrCheck('sin', [piV], fmt);
+      mpfrCheck('cos', [halfPi], fmt);
+      mpfrCheck('tan', [piV], fmt);
+    }
+    const eps1 = fromDouble(1 + 2 ** -52);
+    mpfrCheck('ln', [eps1], F.binary64);
+    mpfrCheck('log10', [eps1], F.binary64);
+    mpfrCheck('pow', [eps1, fromDouble(2 ** 52)], F.binary64);
+    const big64 = fromDouble(2 ** 30 + 2 ** -22);
+    for (const fn of ['sin', 'cos', 'tan']) mpfrCheck(fn, [big64], F.binary64);
+    const big128 = roundFraction(dyadic((1n << 112n) + 1n, -62), F.binary128, 'RNE').value;
+    for (const fn of ['sin', 'cos', 'tan']) mpfrCheck(fn, [big128], F.binary128);
+  });
 });
 
 describe('exact reference for irrational values', () => {
@@ -152,6 +236,25 @@ describe('exact reference for irrational values', () => {
     expect(exactFunction('sqrt', [exact.finite(new Fraction(2))]).approx).toBe(true);
     expect(exactRoot(10n ** 40n, 4)).toBe(10n ** 10n);
     expect(exactRoot(10n ** 40n + 1n, 4)).toBe(null);
+  });
+
+  it('handles special exact values accurately (pow(-inf, odd), pow(0, -sqrt(2)), inf/-0, total cancellation)', () => {
+    const rInf = evaluate({ program: 'pow(-inf, 3)', formats: [F.binary64], mode: 'RNE' });
+    expect(rInf.steps[rInf.result].exact).toMatchObject({ kind: 'inf', sign: 1 });
+    const rEven = evaluate({ program: 'pow(-inf, 2)', formats: [F.binary64], mode: 'RNE' });
+    expect(rEven.steps[rEven.result].exact).toMatchObject({ kind: 'inf', sign: 0 });
+    const rFrac = evaluate({ program: 'pow(-inf, 1.5)', formats: [F.binary64], mode: 'RNE' });
+    expect(rFrac.steps[rFrac.result].exact.kind).toBe('nan');
+    const rZeroNeg = evaluate({ program: 'pow(0, -sqrt(2))', formats: [F.binary64], mode: 'RNE' });
+    expect(rZeroNeg.steps[rZeroNeg.result].exact.kind).toBe('nan');
+    expect(rZeroNeg.steps[rZeroNeg.result].exact.beyond).toBeFalsy();
+    const rDivNegZero = evaluate({ program: 'inf / -0', formats: [F.binary64], mode: 'RNE' });
+    const st = rDivNegZero.steps[rDivNegZero.result];
+    expect(st.exact).toMatchObject({ kind: 'inf', sign: 1 });
+    expect(compareToExact(st.fmt.binary64.value, st.exact, F.binary64).status).toBe('both-inf');
+    // Complete cancellation to 0 in decimal.js reports 0 reliable digits (not 59)
+    const rCanc = evaluate({ program: '(1 - cos(x)) / (x * x)', variables: [{ name: 'x', value: '1e-60' }], formats: [F.binary64], mode: 'RNE', refDigits: 60 });
+    expect(rCanc.steps[rCanc.result].exact.reliable).toBe(0);
   });
 
   it('reports how many digits of the reference are verified', () => {

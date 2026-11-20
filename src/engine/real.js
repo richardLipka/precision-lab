@@ -74,8 +74,8 @@ function pair(x) {
 
 function agreement(a, b) {
   const bb = new B(a);
-  if (bb.eq(b)) return DIG - 1;
   if (b.isZero()) return 0;
+  if (bb.eq(b)) return DIG - 1;
   const rel = bb.minus(b).abs().div(b.abs());
   const lg = rel.e < -300 ? rel.e : Math.log10(rel.toNumber());
   return Math.max(0, Math.min(DIG - 1, -lg));
@@ -215,6 +215,15 @@ export function exactFunction(name, args) {
   const xr = x.r;
   const zero = xr.n === 0n;
   const neg = xr.s < 0n && !zero;
+  if (name === 'pow') {
+    const yr = y.r;
+    if (!y.approx && yr.n === 0n) return R(new Fraction(1));
+    if (!x.beyond && zero) {
+      if (y.beyond ? y.b.isNeg() : yr.s < 0n && yr.n !== 0n) return exact.nan('0 to a negative power');
+      if (!y.approx && yr.n > 0n) return R(new Fraction(0));
+      if (y.approx && !y.b.isNeg() && !y.b.isZero()) return R(new Fraction(0));
+    }
+  }
   if (!x.approx && (name !== 'pow' || !y.approx)) {
     switch (name) {
       case 'sqrt': {
@@ -308,8 +317,17 @@ function infLimit(name, x, y) {
     });
     case 'pow': {
       if (y.kind === 'inf') return exact.nan('power with an infinite exponent');
-      if (y.r.n === 0n) return exact.finite(new Fraction(1));
-      return pos(y) ? exact.inf(0) : exact.finite(new Fraction(0));
+      if (y.r.n === 0n && !y.beyond) return exact.finite(new Fraction(1));
+      const yPos = y.beyond ? !y.b.isNeg() : pos(y);
+      if (!yPos) {
+        if (x.sign && (y.approx || !isInt(y.r))) return exact.nan('negative base with a non-integer exponent');
+        return exact.finite(new Fraction(0));
+      }
+      if (x.sign) {
+        if (y.approx || !isInt(y.r)) return exact.nan('negative base with a non-integer exponent');
+        return exact.inf((y.r.n & 1n) === 1n ? 1 : 0);
+      }
+      return exact.inf(0);
     }
     default: return exact.nan(`${name}(±∞) is undefined`);
   }

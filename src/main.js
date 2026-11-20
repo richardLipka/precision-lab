@@ -202,9 +202,9 @@ function initControls() {
     history.replaceState(null, '', url);
     try {
       await navigator.clipboard.writeText(url);
-      flash($('share'), t('btn.linkCopied'));
+      flash($('share'), t('btn.linkCopied'), 'btn.copyLink');
     } catch {
-      flash($('share'), t('btn.linkInBar'));
+      flash($('share'), t('btn.linkInBar'), 'btn.copyLink');
     }
   });
 
@@ -259,10 +259,15 @@ function setView(view) {
   else rewritePanel?.render();
 }
 
-function flash(btn, text) {
-  const old = btn.textContent;
+const flashTimers = new WeakMap();
+function flash(btn, text, restoreKey = null) {
+  clearTimeout(flashTimers.get(btn));
+  if (!btn.dataset.flashOrig) btn.dataset.flashOrig = btn.textContent;
   btn.textContent = text;
-  setTimeout(() => { btn.textContent = old; }, 1500);
+  flashTimers.set(btn, setTimeout(() => {
+    btn.textContent = restoreKey ? t(restoreKey) : btn.dataset.flashOrig;
+    delete btn.dataset.flashOrig;
+  }, 1500));
 }
 
 function markCustom() {
@@ -321,9 +326,9 @@ function applyTexts() {
   $('steps-legend').innerHTML = badgeLegendHtml({ table: true });
 }
 
-/** What the rounding mode selector changes, and what the chosen mode is good for. */
+/** Concise 1-sentence hint for the active rounding mode. */
 function renderModeHint() {
-  $('mode-hint').textContent = `${t('setup.modeHint')} ${t('modeHint.' + state.mode)}`;
+  $('mode-hint').textContent = t('modeHint.' + state.mode);
 }
 
 function syncInputs() {
@@ -405,9 +410,9 @@ function readNames(program) {
   return names;
 }
 
-function run(resetSel = false) {
+function run(resetSel = false, clearHash = true) {
   saveState();
-  if (location.hash) history.replaceState(null, '', location.pathname);
+  if (clearHash && location.hash) history.replaceState(null, '', location.pathname + location.search);
   sweepPanel?.markStale();
   rewritePanel?.invalidate();
   try {
@@ -549,13 +554,15 @@ function renderSummary() {
     const sub = st.exact.approx ? `<span class="muted small">${escapeHtml(t(st.exact.big ? 'steps.big' : 'steps.irrational'))}</span>` : '';
     const cells = result.formats.map((f) => {
       const c = cell(st, f);
-      return `<td><button class="sum-cell${isSel(st, f.id)}" data-step="${st.id}" data-fmt="${f.id}"><span class="mono v">${escapeHtml(c.text)}</span> ${badge(c.cmp, f)}</button></td>`;
+      const cause = causeOf(st, f);
+      const chip = cause.code !== 'exact' ? causeChip(cause) : '';
+      return `<td><button class="sum-cell${isSel(st, f.id)}" data-step="${st.id}" data-fmt="${f.id}"><span class="mono v">${escapeHtml(c.text)}</span> <span class="sum-meta">${badge(c.cmp, f)}${flagMiniHtml(c.res.flags)}${chip}</span></button></td>`;
     }).join('');
     return `<tr class="${row.final ? 'final-row' : ''}${row.output || row.final ? '' : ' inter-row'}"><th><span class="mono">${escapeHtml(row.label)}</span> <span class="muted small">#${st.id}</span>${rowTag(row)}</th>
       <td class="exact-col"><button class="sum-cell${isSel(st, 'exact')}" data-step="${st.id}" data-fmt="exact"><span class="mono v">${escapeHtml(trueText(st.exact, 20))}</span> ${sub}</button></td>${cells}</tr>`;
   }).join('');
-  host.innerHTML = `<div class="summary-head"><h2>${escapeHtml(t('summary.results'))}</h2><span class="muted small">${escapeHtml(t('summary.steps', { n: result.steps.length, ms: result.ms.toFixed(0) }))}</span></div>
-    <div class="summary-scroll"><table class="sumtab">${head}<tbody>${body}</tbody></table></div>
+  host.innerHTML = `<div class="summary-head"><h2 id="summary-heading">${escapeHtml(t('summary.results'))}</h2><span class="muted small">${escapeHtml(t('summary.steps', { n: result.steps.length, ms: result.ms.toFixed(0) }))}</span></div>
+    <div class="summary-scroll" tabindex="0" role="region" aria-labelledby="summary-heading"><table class="sumtab">${head}<tbody>${body}</tbody></table></div>
     <p class="muted small summary-note">${escapeHtml(t('summary.note'))}</p>`;
   host.querySelectorAll('.sum-cell').forEach((b) => b.addEventListener('click', () => select(Number(b.dataset.step), b.dataset.fmt)));
 }
@@ -578,6 +585,7 @@ function renderDiagnosis() {
   if (!rows.length || !result.formats.length) { host.hidden = true; return; }
   host.hidden = false;
   let anyInexact = false;
+  let anyAccumulated = false;
   // Variables an example marks as exact by design (Kahan summation), and notes on its helper
   // variables; only while the example is unedited (any edit switches to "Custom").
   const ex = EXAMPLES.find((e) => e.id === state.example);
@@ -586,9 +594,9 @@ function renderDiagnosis() {
     const n = row.label.split(', ').find((name) => ex?.helpers?.[name]);
     return n ? `<p class="small muted diag-helper">${escapeHtml(ex.helpers[n][getLang()])}</p>` : '';
   };
-  const groupLines = (root) => result.formats.map((f) => {
+  const groupLines = (root, isOpen = true) => result.formats.map((f) => {
     const dg = diagnose(result, f, { root: root.id, shownOf: (s) => correctDigits(cell(s, f).cmp, f).shown });
-    const head = `<span class="swatch" style="background:${FORMAT_COLOR[f.id]}"></span><b>${escapeHtml(f.short)}:</b> `;
+    const head = `<span class="diag-fmt"><span class="swatch" style="background:${FORMAT_COLOR[f.id]}"></span><b>${escapeHtml(f.short)}:</b> </span>`;
     let text;
     if (dg.final.status !== 'exact' && dg.final.status !== 'both-nan' && dg.final.status !== 'both-inf') anyInexact = true;
     // Exact although the values it was built on were rounded: their errors cancelled (float's 0.1 + 0.2 − 0.3) —
@@ -597,7 +605,8 @@ function renderDiagnosis() {
       // sameOperands (explain.js): x − x is 0 by construction (dg.exactBy: also a + (−a) and
       // c == c further up); a compensated algorithm (marked by its example) cancels the errors on purpose.
       const k = !dg.carried.length ? 'diag.exact' : sameOperands(root, result.steps) ? 'diag.exactSame'
-        : designed.has(root.id) ? 'diag.exactByDesign' : dg.exactBy === 'construction' ? 'diag.exactConstruction' : 'diag.exactCarried';
+        : designed.has(root.id) ? 'diag.exactByDesign' : dg.exactBy === 'construction' ? 'diag.exactConstruction'
+          : dg.exactBy === 'margin' ? 'diag.exactCompare' : 'diag.exactCarried';
       text = escapeHtml(t(k, { list: carriedText(dg.carried) }));
     }
     else if (dg.final.status === 'both-inf' || dg.final.status === 'both-nan') text = escapeHtml(t(dg.final.status === 'both-nan' ? 'diag.bothNan' : 'diag.bothInf'));
@@ -628,25 +637,33 @@ function renderDiagnosis() {
       } else if (dg.final.status === 'approx') {
         // Distance to the true value rounded once, counted in representable numbers
         // (an error in ulps of the true value can read 0.5 ulp for a neighbour).
-        losses = ' ' + escapeHtml(dg.bestPossible === false && dg.apart != null
-          ? t('diag.accumulated', {
+        if (dg.bestPossible === false && dg.apart != null) {
+          if (isOpen) anyAccumulated = true;
+          losses = ' ' + escapeHtml(t('diag.accumulated', {
             n: dg.rounded,
             best: shortestDecimal(dg.best, f),
             value: shortestDecimal(root.fmt[f.id].value, f),
             apart: dg.apart === 1 ? t('diag.apartOne') : t('diag.apartMany', { k: dg.apart }),
-          }) + ' ' + t('digits.def')
-          : t('diag.onlyRounding'));
+          }));
+        } else {
+          losses = ' ' + escapeHtml(t('diag.onlyRounding'));
+        }
       }
     }
-    return `<li>${head}${text}${losses}</li>`;
+    return `<li class="diag-row">${head}<span class="diag-body">${text}${losses}</span></li>`;
   }).join('');
   const groups = rows.length === 1
-    ? `<ul class="diag">${groupLines(rows[0].step)}</ul>`
-    : rows.map((row) => `<details class="diag-group"${row.output || row.final ? ' open' : ''}><summary><span class="mono">${escapeHtml(row.label)}</span> <span class="muted small">#${row.step.id}</span>${rowTag(row)}</summary>${helperNote(row)}<ul class="diag">${groupLines(row.step)}</ul></details>`).join('');
+    ? `<ul class="diag">${groupLines(rows[0].step, true)}</ul>`
+    : rows.map((row) => {
+      const open = row.output || row.final;
+      return `<details class="diag-group"${open ? ' open' : ''}><summary><span class="mono">${escapeHtml(row.label)}</span> <span class="muted small">#${row.step.id}</span>${rowTag(row)}</summary>${helperNote(row)}<ul class="diag">${groupLines(row.step, open)}</ul></details>`;
+    }).join('');
+  // Define "correct digits" once (never repeated on every format line).
+  const digitsNote = anyAccumulated ? `<p class="muted small diag-def">${escapeHtml(t('digits.def'))}</p>` : '';
   const next = anyInexact
     ? `<p class="diag-next small">${escapeHtml(t('diag.next'))} <a href="#" class="view-link" data-view="sweep">${escapeHtml(t('diag.toSweep'))}</a> · <a href="#" class="view-link" data-view="rewrite">${escapeHtml(t('diag.toRewrite'))}</a></p>`
     : '';
-  host.innerHTML = `<div class="section-title"><h2>${escapeHtml(t('diag.title'))}</h2><span class="muted small">${escapeHtml(t('diag.hint'))}</span></div>${groups}${next}`;
+  host.innerHTML = `<div class="section-title"><h2>${escapeHtml(t('diag.title'))}</h2><span class="muted small">${escapeHtml(t('diag.hint'))}</span></div>${groups}${digitsNote}${next}`;
   host.querySelectorAll('.step-link').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
     select(Number(a.dataset.step), a.dataset.fmt);
@@ -899,5 +916,5 @@ rewritePanel = createRewritePanel($('view-rewrite'), {
     run(true);
   },
 });
-run(true);
+run(true, false);
 setView(['sweep', 'rewrite'].includes(state.view) ? state.view : 'compare');

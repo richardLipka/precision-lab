@@ -26,7 +26,7 @@
 //  * Thresholds that choose explanations, chips and colours are the named
 //    constants below.
 
-import { log10Abs, floorLog2, dyadic } from './rational.js';
+import { log10Abs, floorLog2, dyadic, dyadicDiff, scalePow2 } from './rational.js';
 import { fpToFraction } from './ieee.js';
 
 /** log10(2): one bit is worth about 0.301 decimal digits. */
@@ -100,11 +100,15 @@ export const EXACT_LEVEL_GAP = 1;
  * normal range the gap is that of the subnormals; beyond the largest finite
  * number the gap of the top binade is used.
  */
-export function ulpAround(r, fmt) {
+function ulpExp(r, fmt) {
   let E = r.n === 0n ? (fmt.bounded ? fmt.emin : 0) : floorLog2(r);
   if (fmt.bounded && E < fmt.emin) E = fmt.emin;
   if (fmt.bounded && E > fmt.emax) E = fmt.emax;
-  return dyadic(1n, E - fmt.p + 1);
+  return E - fmt.p + 1;
+}
+
+export function ulpAround(r, fmt) {
+  return dyadic(1n, ulpExp(r, fmt));
 }
 
 /**
@@ -172,12 +176,11 @@ export function compareToExact(v, x, fmt) {
     return { status: 'mismatch', digits: null, log10Rel: Infinity, ulpsApprox: Infinity };
   }
   const a = fpToFraction(v);
-  const err = a.sub(x.r);
+  const { err, rel } = dyadicDiff(a, x.r);
   const abs = err.abs();
   if (abs.n === 0n) return { status: 'exact', abs, rel: abs, ulps: abs, err, digits: Infinity, log10Rel: -Infinity };
-  const rel = x.r.n === 0n ? null : abs.div(x.r.abs());
   // Errors in ulps are meaningless when the true value is 0 (any nonzero result is "infinitely" wrong relatively).
-  const ulps = x.r.n === 0n ? null : abs.div(ulpAround(x.r, fmt));
+  const ulps = x.r.n === 0n ? null : scalePow2(abs, -ulpExp(x.r, fmt));
   if (!ulps) {
     return { status: 'approx', err, abs, rel: null, ulps: null, ulpsApprox: Infinity, log10Rel: Infinity, digits: 0 };
   }
@@ -208,15 +211,16 @@ export function compareToExact(v, x, fmt) {
 export function localError(res, fmt) {
   // A stand-in exact result beyond the reference's range has no measurable rounding error.
   if (!res.round || !isNum(res.value) || res.exactOp.kind !== 'finite' || res.exactOp.beyond) return null;
-  const err = fpToFraction(res.value).sub(res.exactOp.r);
+  const { err, rel } = dyadicDiff(fpToFraction(res.value), res.exactOp.r);
   const abs = err.abs();
-  const ulp = ulpAround(res.exactOp.r, fmt);
+  const ue = ulpExp(res.exactOp.r, fmt);
+  const ulp = dyadic(1n, ue);
   return {
     err,
     abs,
     ulp,
-    ulps: abs.div(ulp),
-    rel: res.exactOp.r.n === 0n ? null : abs.div(res.exactOp.r.abs()),
+    ulps: scalePow2(abs, -ue),
+    rel,
   };
 }
 

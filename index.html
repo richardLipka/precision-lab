@@ -59,7 +59,6 @@
 
       <section>
         <h2 data-i18n="setup.formats"></h2>
-        <p class="muted small" data-i18n-html="setup.formatsHint"></p>
         <div id="formats" class="formats"></div>
         <div class="custom-fmt">
           <label class="check"><input type="checkbox" id="custom-on" /> <span data-i18n="setup.customFmt"></span></label>
@@ -67,8 +66,12 @@
           <label><span data-i18n="setup.exp"></span> <input type="number" id="custom-e" min="2" max="30" value="15" /> <span data-i18n="setup.bits"></span></label>
           <label class="check" data-i18n-title="setup.unboundedTitle"><input type="checkbox" id="custom-unb" checked /> <span data-i18n="setup.unbounded"></span></label>
         </div>
-        <p class="muted small" data-i18n="setup.exactNote"></p>
-        <p class="muted small" data-i18n="setup.platformNote"></p>
+        <details class="info-fold">
+          <summary data-i18n="setup.formatsAbout"></summary>
+          <p class="muted small" data-i18n-html="setup.formatsHint"></p>
+          <p class="muted small" data-i18n="setup.exactNote"></p>
+          <p class="muted small" data-i18n="setup.platformNote"></p>
+        </details>
       </section>
 
       <section>
@@ -78,7 +81,10 @@
         <label class="check"><input type="checkbox" id="show-const" checked /> <span data-i18n="setup.showConst"></span></label>
         <label class="label" for="ref-digits" data-i18n="setup.refDigits"></label>
         <input type="number" id="ref-digits" min="20" max="1000" value="60" class="ref-digits" />
-        <p class="muted small" data-i18n="setup.refHint"></p>
+        <details class="info-fold">
+          <summary data-i18n="setup.refAbout"></summary>
+          <p class="muted small" data-i18n="setup.refHint"></p>
+        </details>
       </section>
     </aside>
 
@@ -113,10 +119,10 @@
           <div id="chart"></div>
         </div>
         <div class="panel">
-          <div class="section-title"><h2 data-i18n="steps.title"></h2><span id="step-count" class="muted small"></span></div>
+          <div class="section-title"><h2 id="steps-heading" data-i18n="steps.title"></h2><span id="step-count" class="muted small"></span></div>
           <p class="muted small steps-hint" data-i18n="steps.hint"></p>
           <div id="steps-legend"></div>
-          <div class="table-scroll"><table id="steps" class="steps"></table></div>
+          <div class="table-scroll" tabindex="0" role="region" aria-labelledby="steps-heading"><table id="steps" class="steps"></table></div>
           <div id="pager" class="pager"></div>
         </div>
       </div>

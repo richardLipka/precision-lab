@@ -16,9 +16,9 @@
 // first-order error bound cannot explain it, and texts about rounding name the
 // active rounding mode instead of assuming round-to-nearest.
 
-import { bitLength, floorLog2, fmtFrac, log10Abs, dyadic, toSciParts } from './rational.js';
+import { bitLength, floorLog2, fmtFrac, log10Abs, dyadic, dyadicSub, toSciParts } from './rational.js';
 import {
-  fpToFraction, shortestDecimal, exactShort, roundFraction, fpOrder, fpEquals, exponentOf, maxFinite, CASTS, FORMATS,
+  fpToFraction, shortestDecimal, exactShort, roundFraction, fpOrder, fpEquals, fpNeg, isSubnormal, exponentOf, maxFinite, CASTS, FORMATS,
 } from './ieee.js';
 import { exactOrder } from './evaluator.js';
 import { COMPARISONS } from './parser.js';
@@ -44,8 +44,10 @@ function toNum(v) {
 /**
  * Relative condition number |x·f'(x)/f(x)| of a function at the (computed)
  * argument: how much a relative error in the argument is amplified.
+ * For 2-argument pow(x, y), when `opCmp` is supplied only the arguments that
+ * actually carry error are considered (so pow(inexact, 0.5) has κ = 0.5, not |0.5·ln|x||).
  */
-export function conditionNumber(fn, args) {
+export function conditionNumber(fn, args, opCmp = null) {
   const x = toNum(args[0]);
   if (!Number.isFinite(x)) return null;
   switch (fn) {
@@ -59,7 +61,20 @@ export function conditionNumber(fn, args) {
     case 'pow': {
       const y = toNum(args[1]);
       if (!Number.isFinite(y)) return null;
-      return Math.max(Math.abs(y), Math.abs(y * Math.log(Math.abs(x))));
+      const kx = Math.abs(y);
+      const ky = Math.abs(y * Math.log(Math.abs(x)));
+      if (opCmp) {
+        const logRel = (c) => (c.status === 'approx' && c.rel ? log10Abs(c.rel) : c.status === 'mismatch' ? Infinity : -Infinity);
+        const lx = logRel(opCmp[0]);
+        const ly = logRel(opCmp[1]);
+        if (lx > -Infinity && ly === -Infinity) return kx;
+        if (lx === -Infinity && ly > -Infinity) return ky;
+        if (Number.isFinite(lx) && Number.isFinite(ly)) {
+          const m = Math.max(lx, ly);
+          return kx * Math.pow(10, lx - m) + ky * Math.pow(10, ly - m);
+        }
+      }
+      return Math.max(kx, ky);
     }
     default: return null;
   }
@@ -199,8 +214,8 @@ export function errorSource(step, steps, fmt, maxDepth = 400) {
     if (X.kind !== 'finite' || !isNum(res.value)) return null;
     if (fpToFraction(res.value).equals(X.r)) return null;
     if (cur.kind !== 'op' || res.exactOp.kind !== 'finite') return cur;
-    const prop = res.exactOp.r.sub(X.r);
-    const nw = fpToFraction(res.value).sub(res.exactOp.r);
+    const prop = dyadicSub(res.exactOp.r, X.r);
+    const nw = dyadicSub(fpToFraction(res.value), res.exactOp.r);
     if (prop.n === 0n) return cur;
     if (nw.n !== 0n && log10Abs(nw) > log10Abs(prop) - DOMINANCE_DIGITS) return cur;
     if (cur.op === '+' || cur.op === '-') {
@@ -227,7 +242,7 @@ function cancelledSource(step, steps, fmt, prop) {
   const ops = step.operands.map((id) => steps[id]);
   const errs = ops.map((o) => {
     const v = o.fmt[fmt.id].value;
-    return isNum(v) && o.exact.kind === 'finite' ? fpToFraction(v).sub(o.exact.r) : null;
+    return isNum(v) && o.exact.kind === 'finite' ? dyadicSub(fpToFraction(v), o.exact.r) : null;
   });
   if (errs.some((e) => e == null)) return null;
   const lp = log10Abs(prop);
@@ -257,7 +272,7 @@ function largestContributor(step, steps, fmt) {
   let bestW = -Infinity;
   ops.forEach((o, i) => {
     if (o.exact.kind !== 'finite') return;
-    const e = fr[i].sub(o.exact.r);
+    const e = dyadicSub(fr[i], o.exact.r);
     if (e.n === 0n) return;
     let w = lg(e);
     if (step.op === '*') w += lg(fr[1 - i]);
@@ -298,9 +313,30 @@ export function sameComputation(a, b, steps, memo = new Map(), depth = 0) {
   return same;
 }
 
-/** A subtraction of two operands that are the same computation (x − x, a·3 − a·3): exactly 0 for every input. */
+/** A subtraction or division of two operands that are the same computation (x − x, x / x): exact for every valid input. */
 export function sameOperands(step, steps) {
-  return step.op === '-' && step.operands.length === 2 && sameComputation(steps[step.operands[0]], steps[step.operands[1]], steps);
+  return (step.op === '-' || step.op === '/') && step.operands.length === 2
+    && sameComputation(steps[step.operands[0]], steps[step.operands[1]], steps);
+}
+
+/**
+ * Multiplication by an exact zero (0·x, x·0) or exact zero divided by a finite
+ * nonzero value (0/x): the result is 0 for every finite input — exact by
+ * construction, not by lucky error cancellation.
+ */
+function zeroAbsorb(step, steps, fmt) {
+  if (step.kind !== 'op' || step.operands.length !== 2) return false;
+  const [a, b] = step.operands.map((id) => steps[id]);
+  const exactZero = (s) => !s.exact.beyond && s.exact.kind === 'finite' && s.exact.r.n === 0n
+    && (!fmt || s.fmt[fmt.id].value.kind === 'zero');
+  const finiteNonZero = (s) => s.exact.kind === 'finite' && (s.exact.r.n !== 0n || s.exact.beyond)
+    && (!fmt || s.fmt[fmt.id].value.kind === 'finite');
+  if (step.op === '*') {
+    return (exactZero(a) && (!fmt ? b.exact.kind === 'finite' : isNum(b.fmt[fmt.id].value)))
+      || (exactZero(b) && (!fmt ? a.exact.kind === 'finite' : isNum(a.fmt[fmt.id].value)));
+  }
+  if (step.op === '/') return exactZero(a) && finiteNonZero(b);
+  return false;
 }
 
 /** Rounding modes that treat both signs alike: RN(−x) = −RN(x), so opposite inputs get opposite errors. */
@@ -324,12 +360,12 @@ export function oppositeOperands(step, steps, mode) {
 
 /**
  * Is an exact result with inexact operands exact by construction rather than by
- * luck? x − x, a + (−a) in a symmetric mode, and comparisons of the same
- * computation (c == c) cannot come out otherwise.
+ * luck? x − x, x / x, 0·x, 0/x, a + (−a) in a symmetric mode, and comparisons
+ * of the same computation (c == c) cannot come out otherwise.
  */
-export function exactByConstruction(step, steps, mode) {
+export function exactByConstruction(step, steps, mode, fmt = null) {
   if (step.kind !== 'op' || step.operands.length !== 2) return false;
-  if (sameOperands(step, steps) || oppositeOperands(step, steps, mode)) return true;
+  if (sameOperands(step, steps) || oppositeOperands(step, steps, mode) || zeroAbsorb(step, steps, fmt)) return true;
   return CMP.has(step.op) && sameComputation(steps[step.operands[0]], steps[step.operands[1]], steps);
 }
 
@@ -357,6 +393,7 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     (s) => correctDigits(cmpById.get(s.id) || compareToExact(s.fmt[fmt.id].value, s.exact, fmt), fmt).shown));
   // Set for operations: does the first-order error bound explain a gain of digits?
   let gainExplained = null;
+  let absorbed = false;
 
   // ---- A true value beyond the decimal range of the reference ---------------
   if (X.beyond) push(X.kind === 'inf' ? 'ref.beyondHuge' : X.kind === 'nan' ? 'ref.beyondUnknown' : 'ref.beyondTiny', { max: MAX_DEC_EXP }, 'warn');
@@ -437,7 +474,8 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
       }
       if (R.tiny) {
         if (v.kind === 'zero') push('conv.flushZero', { why: flushWhy(R, mode, fmt) }, 'bad');
-        else push('conv.subnormal', subnormalParams(v, fmt), 'warn');
+        else if (isSubnormal(v, fmt)) push('conv.subnormal', subnormalParams(v, fmt), 'warn');
+        else push('conv.roundToMinNormal', { minNormal: num(dyadic(1n, fmt.emin)), p: fmt.p }, 'warn');
         setCause('underflow', {}, 'warn');
       }
       roundingItems(res, fmt, mode, push);
@@ -458,12 +496,16 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
   const exactOp = res.exactOp.kind === 'finite' ? res.exactOp.r : null;
   const label = (i) => `#${ops[i].id}`;
   // The operands were wrong, yet the result equals the true value: their errors cancelled.
-  // That is luck, unless both operands are the same computation (x − x): then it is certain.
+  // That is luck, unless both operands are the same computation (x − x, x / x), opposite
+  // values added, or an exact zero factor (0·x, 0/x): then it is certain by construction.
   const cancelled = inherited && cmp.status === 'exact';
+  const zeroFactor = cancelled && zeroAbsorb(step, steps, fmt);
   const opposite = cancelled && oppositeOperands(step, steps, mode);
   const same = cancelled && (opposite || sameOperands(step, steps));
-  const lucky = cancelled && !same;
+  const lucky = cancelled && !same && !zeroFactor;
+  const flushedZero = !!(newRounding && R.tiny && v.kind === 'zero');
   let fnKappa = null;
+  let cancelReported = false;
 
   /** Name the step where the error of this (exact, amplifying) step was created. */
   const pushSource = () => {
@@ -476,23 +518,26 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
 
   if (FUNCS.has(step.op)) {
     const fn = step.op;
+    const kappa = conditionNumber(fn, opVals, opCmp);
+    if (kappa != null && Number.isFinite(kappa)) {
+      fnKappa = kappa;
+      const params = { fn, kappa: kappa >= 1e4 || kappa < 1e-3 ? kappa.toExponential(1) : kappa.toPrecision(3) };
+      if (kappa >= COND_REPORT) {
+        push(inherited ? 'fn.cond' : 'fn.condNoInput', params, inherited && kappa >= COND_CAUSE ? 'bad' : 'info');
+        if (inherited && kappa >= COND_CAUSE) {
+          setCause('cond', { kappa: kappa.toExponential(0).replace('e+', 'e') }, 'bad');
+          pushSource();
+        }
+      } else if (inherited && kappa < COND_DAMP) {
+        push('fn.condDamp', params, 'good');
+      }
+    }
     if (res.exactOp.approx) {
       const code = fn === 'sqrt' ? 'fn.sqrt' : fn === 'pow' ? 'fn.pow' : fn === 'log10' ? 'fn.log10' : 'fn.transcendental';
       push(code, { fn, r0: fn === 'ln' ? '1' : '0' }, 'info');
       if (res.uncertain) push('fn.uncertain', {}, 'warn');
     } else if (!newRounding && exactOp && !res.flags.invalid && !res.flags.divByZero) {
       push('fn.exact', { fn }, 'good');
-    }
-    const kappa = conditionNumber(fn, opVals);
-    if (kappa != null && Number.isFinite(kappa)) {
-      fnKappa = kappa;
-      const params = { fn, kappa: kappa >= 1e4 || kappa < 1e-3 ? kappa.toExponential(1) : kappa.toPrecision(3) };
-      if (kappa >= COND_REPORT) {
-        push(inherited ? 'fn.cond' : 'fn.condNoInput', params, inherited && kappa >= COND_CAUSE ? 'bad' : 'info');
-        if (inherited && kappa >= COND_CAUSE) setCause('cond', { kappa: kappa.toExponential(0).replace('e+', 'e') }, 'bad');
-      } else if (inherited && kappa < COND_DAMP) {
-        push('fn.condDamp', params, 'good');
-      }
     }
   }
 
@@ -522,7 +567,7 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
       // the only harm a cancellation can do is to amplify the operands' errors.
       if (lk >= CANCEL_MIN_LOG10_KAPPA) {
         const kappaText = num(kappa, 2);
-        if (inherited) {
+        if (inherited && !cancelled) {
           const relIn = Math.max(...opCmp.map((c) => (c.status === 'approx' && c.rel ? Math.pow(10, log10Abs(c.rel)) : 0)));
           const relProp = X.kind === 'finite' && X.r.n !== 0n ? exactOp.sub(X.r).abs().div(X.r.abs()) : null;
           const catastrophic = lk >= CATASTROPHIC_LOG10_KAPPA;
@@ -535,10 +580,12 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
             relIn: relIn ? relIn.toExponential(1) : '0',
             relOut: relProp ? num(relProp, 2) : '—',
           }, catastrophic ? 'bad' : 'warn');
+          cancelReported = true;
           setCause('cancel', { kappa: kappaText }, catastrophic ? 'bad' : 'warn');
-          if (!cancelled) pushSource();
-        } else {
+          pushSource();
+        } else if (!inherited) {
           push('op.cancelExact', { kappa: kappaText }, 'good');
+          cancelReported = true;
         }
       }
     } else if (effSub && S.n === 0n) {
@@ -555,68 +602,118 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     if (a.n !== 0n && b.n !== 0n) {
       const bigIdx = A.compare(B) >= 0 ? 0 : 1;
       const big = opVals[bigIdx];
+      const bigEff = step.op === '-' && bigIdx === 1 ? fpNeg(big) : big;
       const smallR = bigIdx === 0 ? B : A;
       // Half the gap between the two neighbours of the exact sum: the step's ulp
       // (the ulp of `big` unless the sum crosses a power of two).
       const ulp = ulpAround(exactOp, fmt);
       const half = ulp.div(2);
       const eDiff = exponentOf(big) - floorLog2(smallR);
-      const backToBig = v.kind === big.kind && fpToFraction(v).equals(fpToFraction(big));
+      const backToBig = v.kind === bigEff.kind && fpToFraction(v).equals(fpToFraction(bigEff));
       if (backToBig && smallR.compare(ulp) < 0) {
-        const p = { small: shortestDecimal(opVals[1 - bigIdx], fmt), big: shortestDecimal(big, fmt), half: num(half), ulp: num(ulp), sn: label(1 - bigIdx), mode: key('mode.' + mode) };
+        const p = { small: shortestDecimal(opVals[1 - bigIdx], fmt), big: shortestDecimal(bigEff, fmt), half: num(half), ulp: num(ulp), sn: label(1 - bigIdx), mode: key('mode.' + mode) };
         const rel = smallR.compare(half);
         // below half: any round-to-nearest gives big; exactly half: a tie; above half: only a directed mode
         push(rel < 0 ? 'op.absorbTotal' : rel === 0 ? 'op.absorbTie' : 'op.absorbDirected', p, 'bad');
+        absorbed = true;
         setCause('absorb', {}, 'bad');
       } else if (newRounding && eDiff > 0) {
         push('op.alignShift', { d: eDiff, sn: label(1 - bigIdx) }, 'info');
       }
     }
-    if (newRounding && !R.tiny && significantBits(exactOp) > fmt.p) push('op.addBits', { bits: fmtBits(significantBits(exactOp)), p: fmt.p }, 'info');
+    if (newRounding && !R.tiny && !absorbed && significantBits(exactOp) > fmt.p) push('op.addBits', { bits: fmtBits(significantBits(exactOp)), p: fmt.p }, 'info');
   } else if (step.op === '*' && exactOp) {
     const bits = significantBits(exactOp);
     if (newRounding && !R.tiny && bits > fmt.p) push('op.mulBits', { bits: fmtBits(bits), p: fmt.p, p2: 2 * fmt.p }, 'info');
-    if (inherited && !cancelled) push('op.relMul', { list: relList(opCmp, ops) }, 'info');
+    if (inherited && !cancelled && !flushedZero) push('op.relMul', { list: relList(opCmp, ops) }, 'info');
   } else if (step.op === '/' && exactOp) {
     const bits = significantBits(exactOp);
     if (bits === Infinity) {
       const bin = binaryText(exactOp.abs(), 40);
-      push('op.divPeriodic', { bin, note: key(bin.includes('(') ? 'expansion.period' : 'expansion.long'), factors: factorsParam(exactOp) }, 'info');
+      if (!flushedZero) push('op.divPeriodic', { bin, note: key(bin.includes('(') ? 'expansion.period' : 'expansion.long'), factors: factorsParam(exactOp) }, 'info');
     } else if (newRounding && !R.tiny && bits > fmt.p) push('op.divBits', { bits, p: fmt.p }, 'info');
-    if (inherited && !cancelled) push('op.relDiv', { list: relList(opCmp, ops) }, 'info');
+    if (inherited && !cancelled && !flushedZero) push('op.relDiv', { list: relList(opCmp, ops) }, 'info');
   } else if (step.op === 'fma' && exactOp) {
     push(newRounding ? 'op.fmaOnce' : 'op.fmaExact', {}, 'good');
+    if (opVals.every(isNum)) {
+      const ab = fpToFraction(opVals[0]).mul(fpToFraction(opVals[1]));
+      const c = fpToFraction(opVals[2]);
+      const AB = ab.abs();
+      const C = c.abs();
+      const S = exactOp.abs();
+      const effSub = ab.n !== 0n && c.n !== 0n && (ab.s * c.s) < 0n;
+      if (effSub && S.n !== 0n && !newRounding && inherited && !cancelled) {
+        const kappa = AB.add(C).div(S);
+        const lk = log10Abs(kappa);
+        if (lk >= CANCEL_MIN_LOG10_KAPPA) {
+          const kappaText = num(kappa, 2);
+          const relIn = Math.max(...opCmp.map((cm) => (cm.status === 'approx' && cm.rel ? Math.pow(10, log10Abs(cm.rel)) : 0)));
+          const relProp = X.kind === 'finite' && X.r.n !== 0n ? exactOp.sub(X.r).abs().div(X.r.abs()) : null;
+          const catastrophic = lk >= CATASTROPHIC_LOG10_KAPPA;
+          push(catastrophic ? 'op.cancelAmplify' : 'op.cancelMild', {
+            kappa: kappaText, est: lk.toFixed(1), lost: dig(Math.max(0, digitsOfStep().lost)),
+            relIn: relIn ? relIn.toExponential(1) : '0', relOut: relProp ? num(relProp, 2) : '—',
+          }, catastrophic ? 'bad' : 'warn');
+          cancelReported = true;
+          setCause('cancel', { kappa: kappaText }, catastrophic ? 'bad' : 'warn');
+          pushSource();
+        }
+      } else if (effSub && S.n === 0n && inherited && X.kind === 'finite' && X.r.n !== 0n) {
+        push('op.exactZeroLost', {}, 'bad');
+        setCause('cancel', { kappa: '∞' }, 'bad');
+        pushSource();
+      }
+      if (ab.n !== 0n && c.n !== 0n && newRounding && !R.overflow) {
+        const ulp = ulpAround(exactOp, fmt);
+        const half = ulp.div(2);
+        const vr = fpToFraction(v);
+        if (vr.equals(ab) && C.compare(ulp) < 0) {
+          const p = { small: shortestDecimal(opVals[2], fmt), big: shortestDecimal(v, fmt), half: num(half), ulp: num(ulp), sn: label(2), mode: key('mode.' + mode) };
+          const rel = C.compare(half);
+          push(rel < 0 ? 'op.absorbTotal' : rel === 0 ? 'op.absorbTie' : 'op.absorbDirected', p, 'bad');
+          absorbed = true;
+          setCause('absorb', {}, 'bad');
+        } else if (vr.equals(c) && AB.compare(ulp) < 0) {
+          const p = { small: num(ab, 6), big: shortestDecimal(opVals[2], fmt), half: num(half), ulp: num(ulp), sn: `${label(0)}×${label(1)}`, mode: key('mode.' + mode) };
+          const rel = AB.compare(half);
+          push(rel < 0 ? 'op.absorbTotal' : rel === 0 ? 'op.absorbTie' : 'op.absorbDirected', p, 'bad');
+          absorbed = true;
+          setCause('absorb', {}, 'bad');
+        }
+      }
+    }
   }
 
-  if (!newRounding && exactOp && exactOp.n !== 0n && !res.flags.overflow && !FUNCS.has(step.op)) {
+  if (!newRounding && !cancelReported && exactOp && exactOp.n !== 0n && !res.flags.overflow && !FUNCS.has(step.op) && step.op !== 'fma') {
     push('op.exact', { bits: significantBits(exactOp), p: fmt.p }, 'good');
   }
   if (newRounding) {
     if (R.tiny) {
       if (v.kind === 'zero') push('op.flushZero', { why: flushWhy(R, mode, fmt) }, 'bad');
-      else push('op.subnormal', subnormalParams(v, fmt), 'warn');
+      else if (isSubnormal(v, fmt)) push('op.subnormal', subnormalParams(v, fmt), 'warn');
+      else push('op.roundToMinNormal', { minNormal: num(dyadic(1n, fmt.emin)), p: fmt.p }, 'warn');
       setCause('underflow', {}, 'warn');
     }
-    roundingItems(res, fmt, mode, push);
+    if (!flushedZero) roundingItems(res, fmt, mode, push);
   }
-  if (inherited) {
-    const code = opposite ? 'prop.opposite' : same ? 'prop.same' : lucky ? 'prop.lucky' : 'prop.operands';
-    push(code, { list: describeOperands(ops, opDigits) }, same ? 'good' : lucky ? 'info' : 'warn');
+  if (inherited && !flushedZero) {
+    const code = zeroFactor ? 'prop.zeroAbsorb' : opposite ? 'prop.opposite' : same ? 'prop.same' : lucky ? 'prop.lucky' : 'prop.operands';
+    push(code, { list: describeOperands(ops, opDigits) }, same || zeroFactor ? 'good' : lucky ? 'info' : 'warn');
   }
 
   // Error budget: inherited vs new
   let parts = null;
   let dominance = null;
   if (cmp.status === 'approx' && exactOp && X.kind === 'finite' && isNum(v)) {
-    const prop = exactOp.sub(X.r);
-    const nw = fpToFraction(v).sub(exactOp);
+    const prop = dyadicSub(exactOp, X.r);
+    const nw = dyadicSub(fpToFraction(v), exactOp);
     parts = { prop, nw, total: cmp.err };
     if (inherited && newRounding) {
       const lp = prop.n === 0n ? -Infinity : log10Abs(prop);
       const ln = nw.n === 0n ? -Infinity : log10Abs(nw);
       dominance = lp - ln > DOMINANCE_DIGITS ? 'inherited' : ln - lp > DOMINANCE_DIGITS ? 'new' : 'both';
       const dom = dominance === 'inherited' ? 'budget.domInherited' : dominance === 'new' ? 'budget.domNew' : 'budget.domBoth';
-      push('budget', { prop: signed(prop), nw: signed(nw), total: signed(cmp.err), dom: key(dom) }, 'info');
+      if (!flushedZero) push('budget', { prop: signed(prop), nw: signed(nw), total: signed(cmp.err), dom: key(dom) }, 'info');
     }
   }
 
@@ -630,7 +727,8 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
   // Cause chip: a special event found above wins; otherwise the dominant part
   // of the error budget (DOMINANCE_DIGITS) decides between the operands'
   // inherited error, this step's rounding, or both.
-  if (same) setCause('cancelSame', {}, 'good');
+  if (zeroFactor) setCause('exact', {}, 'good');
+  else if (same) setCause('cancelSame', {}, 'good');
   else if (lucky) setCause('lucky', {}, 'info');
   else if (newRounding && dominance === 'inherited') setCause('prop', {}, 'warn');
   else if (newRounding && dominance === 'both') setCause('propRound', {}, 'warn');
@@ -650,6 +748,10 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     if (!cmp.rel) { push('verdict.trueZero', { abs: num(cmp.abs) }, 'warn'); return; }
     // Shown (capped) digits only, the same figures as the badges and the diagnosis.
     const sd = digitsOfStep();
+    if (absorbed && sd.lost < NOTABLE_DIGITS) {
+      push('verdict.absorbedWarning', { full: dig(full) }, 'warn');
+      return;
+    }
     if (sd.from === Infinity) {
       const info = correctDigits(cmp, fmt);
       if (sd.lost >= NOTABLE_DIGITS) {
@@ -783,18 +885,35 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
     const T = FORMATS.find((f) => f.id === CASTS[step.op]);
     const { mid, r1, r2 } = res.cast;
     const target = key('fmt.name.' + T.id);
-    push('cast.what', { fn: step.op, target, pT: T.p, p: fmt.p }, 'info');
     const sameFormat = T.p === fmt.p && T.emin === fmt.emin && T.emax === fmt.emax;
     let doubleRound = false;
+    const leaf = op.kind !== 'op';
+    let drItem = null;
+    if (!sameFormat && R.inexact && r1.inexact && !r1.overflow && ores.round?.inexact && ores.exactOp.kind === 'finite' && !ores.exactOp.beyond && !(leaf && ores.exactOp.approx)) {
+      const once = roundFraction(ores.exactOp.r, T, mode).value;
+      const prevP = ores.cast ? FORMATS.find((f) => f.id === ores.cast.target).p : fmt.p;
+      const params = { id: op.id, p: prevP, pT: T.p, target, src: leaf ? (op.source ?? op.text) : '' };
+      if (!fpEquals(once, mid)) {
+        doubleRound = true;
+        drItem = { code: leaf ? 'cast.doubleRoundingInput' : 'cast.doubleRounding', params: { ...params, once: shortestDecimal(once, T), twice: shortestDecimal(mid, T) }, tone: 'bad' };
+      } else {
+        drItem = { code: leaf ? 'cast.twiceSameInput' : 'cast.twiceSame', params, tone: 'info' };
+      }
+    }
+    // Lead with the headline failure (double rounding or overflow) rather than generic cast mechanics.
+    if (doubleRound) push(drItem.code, drItem.params, drItem.tone);
+    else if (r1.overflow) {
+      push('cast.overflow', { target, result: shortestDecimal(mid, T) }, 'bad');
+      setCause('overflow', {}, 'bad');
+    } else {
+      push('cast.what', { fn: step.op, target, pT: T.p, p: fmt.p }, 'info');
+    }
     if (sameFormat) {
       push('cast.same', {}, 'good');
     } else if (!R.inexact) {
       push('cast.fits', { target }, 'good');
     } else {
-      if (r1.overflow) {
-        push('cast.overflow', { target, result: shortestDecimal(mid, T) }, 'bad');
-        setCause('overflow', {}, 'bad');
-      } else if (r1.inexact) {
+      if (!r1.overflow && r1.inexact) {
         // Both sides in this column's shortest form when possible: the target's own shortest
         // form can hide the change (0.1 in half → 0.1 in bfloat16 is really 0.09998 → 0.1001).
         const kept = r2 && !r2.inexact;
@@ -806,24 +925,14 @@ export function explainStep(step, steps, fmt, mode, opts = {}) {
         if (r2.overflow) setCause('overflow', {}, 'bad');
         else if (r2.tiny) setCause('underflow', {}, 'warn');
       }
-      // The operand was rounded already (to this column's p bits) and is now rounded again:
-      // the result of an operation, or an input / literal converted from decimal
-      // (decimal → double → float). Its exact value rounded once decides.
-      const leaf = op.kind !== 'op';
-      if (r1.inexact && !r1.overflow && ores.round?.inexact && ores.exactOp.kind === 'finite' && !(leaf && ores.exactOp.approx)) {
-        const once = roundFraction(ores.exactOp.r, T, mode).value;
-        const params = { id: op.id, p: fmt.p, pT: T.p, target, src: leaf ? (op.source ?? op.text) : '' };
-        if (!fpEquals(once, mid)) {
-          doubleRound = true;
-          push(leaf ? 'cast.doubleRoundingInput' : 'cast.doubleRounding', { ...params, once: shortestDecimal(once, T), twice: shortestDecimal(mid, T) }, 'bad');
-        } else {
-          push(leaf ? 'cast.twiceSameInput' : 'cast.twiceSame', params, 'info');
-        }
-      }
+      if (drItem && !doubleRound) push(drItem.code, drItem.params, drItem.tone);
     }
     const inherited = opCmpOf(op) !== 'exact';
     const lucky = inherited && cmp.status === 'exact';
-    if (inherited) push(lucky ? 'prop.lucky' : 'prop.operands', { list: describeOperands([op], [correctDigits(compareToExact(ores.value, op.exact, fmt), fmt).shown ?? 0]) }, lucky ? 'info' : 'warn');
+    // When double rounding occurred from a wider column, cast.doubleRounding already explains the operand's rounding.
+    if (inherited && !(doubleRound && fmt.p > T.p)) {
+      push(lucky ? 'prop.lucky' : 'prop.operands', { list: describeOperands([op], [correctDigits(compareToExact(ores.value, op.exact, fmt), fmt).shown ?? 0]) }, lucky ? 'info' : 'warn');
+    }
     if (doubleRound) setCause('doubleRound', {}, 'bad');
     else if (lucky) setCause('lucky', {}, 'info');
     else if (R.inexact) setCause('round', {}, 'info');
@@ -861,6 +970,14 @@ function propagatedBoundLog10(step, ops, opVals, opCmp, exactOp, fnKappa) {
       const ab = Math.max(rel[0], rel[1]) === -Infinity ? -Infinity : Math.max(rel[0], rel[1]) + LOG10_2 + mag[0] + mag[1] - lr;
       return Math.max(ab, weighted(2)) + LOG10_2;
     }
+    case 'pow': {
+      const x = toNum(opVals[0]);
+      const y = toNum(opVals[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      const bx = rel[0] === -Infinity ? -Infinity : rel[0] + Math.log10(Math.abs(y));
+      const by = rel[1] === -Infinity ? -Infinity : rel[1] + Math.log10(Math.abs(y * Math.log(Math.abs(x))));
+      return Math.max(bx, by) + (bx !== -Infinity && by !== -Infinity ? LOG10_2 : 0);
+    }
     default:
       if (FUNCS.has(step.op) && fnKappa != null) return Math.max(...rel) + Math.log10(fnKappa); // κ = 0: −∞, fully damped
       return null;
@@ -892,7 +1009,7 @@ function relList(opCmp, ops) {
 function roundingItems(res, fmt, mode, push) {
   const R = res.round;
   const loc = localError(res, fmt);
-  if (!R || !R.inexact || !loc) return;
+  if (!R || !R.inexact || !loc || R.direction === 'exact') return;
   if (R.guard === 1 && !R.sticky) {
     push('round.tie', { mode: key('mode.' + mode), dir: key('dir.' + R.direction) }, 'info');
   }
@@ -993,14 +1110,21 @@ export function diagnose(result, fmt, { root: rootId = result.result, shownOf: s
     for (const id of needed) if (steps[id].fmt[fmt.id].round?.inexact) rounded++;
   }
   // An exact result built on rounded values: did their errors cancel by construction
-  // (every exact step with inexact operands is x − x, a + (−a) or c == c) or by luck?
+  // (every exact step with inexact operands is x − x, x / x, 0·x, a + (−a) or c == c),
+  // stay irrelevant because a comparison had wide true margin, or cancel by luck?
   let exactBy = null;
   if (final.status === 'exact' && carried.length) {
     exactBy = 'construction';
     for (const id of needed) {
       const s = steps[id];
       if (s.kind !== 'op' || shownOf(s) !== Infinity || !s.operands.some((o) => shownOf(steps[o]) !== Infinity)) continue;
-      if (!exactByConstruction(s, steps, result.mode || 'RNE')) { exactBy = 'luck'; break; }
+      if (exactByConstruction(s, steps, result.mode || 'RNE', fmt)) continue;
+      if (CMP.has(s.op) && exactOrder(steps[s.operands[0]].exact, steps[s.operands[1]].exact).order !== 0) {
+        if (exactBy === 'construction') exactBy = 'margin';
+        continue;
+      }
+      exactBy = 'luck';
+      break;
     }
   }
   // digits: shown (capped) correct digits of the result; raw: the measured −log10(rel. error)

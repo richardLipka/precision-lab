@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { evaluate } from '../src/engine/evaluator.js';
-import { FORMATS } from '../src/engine/ieee.js';
+import { FORMATS, isSubnormal } from '../src/engine/ieee.js';
 import { explainStep, diagnose, binaryText, errorSource, sameOperands } from '../src/engine/explain.js';
 import { compareToExact, correctDigits, QUALITY_GOOD } from '../src/engine/metrics.js';
 import { runSweep, parsePrecisions } from '../src/engine/sweep.js';
@@ -328,4 +328,169 @@ describe('precision sweep: exact result', () => {
     const ok = runSweep({ variables: [], program: '0.5 + 0.25', mode: 'RNE', precisions: parsePrecisions('1-10'), expBits: null });
     expect(ok.analysis.allStepsExact).toBe(true);
   });
+
+  it('sweep handles beyond-range true values honestly and computes relText', () => {
+    const beyond = runSweep({ variables: [], program: 'exp(-1000000)', mode: 'RNE', precisions: [24, 53], expBits: 11 });
+    expect(beyond.meta.exact).toContain('10^−100000');
+    expect(beyond.rows[0].final.status).toBe('mismatch');
+    expect(beyond.rows[0].final.digits).toBeNull();
+    expect(beyond.rows[0].final.bestDigits).toBeNull();
+    const normal = runSweep({ variables: V('a=0.1,b=0.2'), program: 'a + b', mode: 'RNE', precisions: [24, 53], expBits: 11 });
+    expect(normal.rows[0].final.relText).toBeTruthy();
+    expect(normal.rows[0].final.bestRelText).toBeTruthy();
+  });
+});
+
+describe('automatic explainer truthfulness across edge cases and full example matrix', () => {
+  it('detects absorption when the second operand of subtraction is the huge one (1 - 1e20)', () => {
+    const ex = explain(run('1 - 1e20'), null, F.binary64);
+    expect(ex.cause.code).toBe('absorb');
+    expect(codes(ex)).toContain('op.absorbTotal');
+  });
+
+  it('never reports cancellation on an exact result (1.6 - 1.1 and 1.1 - 1.0990234375 in float)', () => {
+    for (const prog of ['1.6 - 1.1', '1.1 - 1.0990234375']) {
+      const ex = explain(run(prog, '', [F.binary32]), null, F.binary32);
+      expect(codes(ex), prog).not.toContain('op.cancelAmplify');
+      expect(codes(ex), prog).not.toContain('op.cancelMild');
+      expect(codes(ex), prog).toContain('verdict.exact');
+      expect(ex.cause.code, prog).toBe('lucky');
+    }
+  });
+
+  it('does not call a value rounded up to minNormal a subnormal number', () => {
+    const conv = explain(run('x', 'x=0x1.ffcp-15', [F.binary16]), 0, F.binary16);
+    expect(codes(conv)).toContain('conv.roundToMinNormal');
+    expect(codes(conv)).not.toContain('conv.subnormal');
+    // Both operands are exact normal binary16 numbers; their product 0x1.ffcp-15 = 2^-14 - 2^-25
+    // lies just below minNormal and rounds up to normal 2^-14 in RNE.
+    const op = explain(run('a * b', 'a=0x1.ffcp-10,b=0x1p-5', [F.binary16]), null, F.binary16);
+    expect(codes(op)).toContain('op.roundToMinNormal');
+    expect(codes(op)).not.toContain('op.subnormal');
+  });
+
+  it('classifies x / x, 0 * x, x * 0 and 0 / x as exact by construction, not luck', () => {
+    for (const [prog, wantCode, wantCause] of [
+      ['x / x', 'prop.same', 'cancelSame'],
+      ['0 * x', 'prop.zeroAbsorb', 'exact'],
+      ['x * 0', 'prop.zeroAbsorb', 'exact'],
+      ['0 / x', 'prop.zeroAbsorb', 'exact'],
+    ]) {
+      const r = run(prog, 'x=0.1');
+      const ex = explain(r, null, F.binary64);
+      expect(codes(ex), prog).toContain(wantCode);
+      expect(codes(ex), prog).not.toContain('prop.lucky');
+      expect(ex.cause.code, prog).toBe(wantCause);
+      expect(diagnose(r, F.binary64).exactBy, prog).toBe('construction');
+    }
+  });
+
+  it('pow condition number reflects which operand carries error and never contradicts verdict.gainedDamped', () => {
+    const r1 = run('pow(x, 0.5)', 'x=1e-20');
+    const ex1 = explain(r1, null, F.binary64);
+    expect(codes(ex1)).toContain('fn.condDamp');
+    expect(codes(ex1)).not.toContain('fn.cond');
+
+    const r2 = run('x = (1e-100 + 1e-108) - 1e-100\npow(x, 0.01)');
+    const ex2 = explain(r2, null, F.binary64);
+    expect(codes(ex2)).toContain('fn.condDamp');
+    expect(codes(ex2)).not.toContain('fn.cond');
+    expect(codes(ex2)).toContain('verdict.gainedDamped');
+  });
+
+  it('explains fma cancellation, fma absorption, and does not duplicate op.exact after op.fmaExact', () => {
+    const canc = explain(run('x = 1 + 1e-10\nfma(x, 1, -1)'), null, F.binary64);
+    expect(canc.cause.code).toBe('cancel');
+    expect(codes(canc)).toContain('op.cancelAmplify');
+
+    const abs1 = explain(run('fma(1e20, 1, 1)'), null, F.binary64);
+    expect(abs1.cause.code).toBe('absorb');
+    expect(codes(abs1)).toContain('op.absorbTotal');
+
+    const abs2 = explain(run('fma(1, 1, 1e20)'), null, F.binary64);
+    expect(abs2.cause.code).toBe('absorb');
+    expect(codes(abs2)).toContain('op.absorbTotal');
+
+    const ex = explain(run('fma(1, 2, 3)'), null, F.binary64);
+    expect(codes(ex)).toContain('op.fmaExact');
+    expect(codes(ex)).not.toContain('op.exact');
+  });
+
+  it('diagnosis classifies well-separated comparisons (equality in double RNE, 0.1 < 1) as margin, not luck', () => {
+    const eq = runEx('equality', [F.binary64], 'RNE');
+    expect(diagnose(eq, F.binary64).exactBy).toBe('margin');
+    const lt = run('0.1 < 1');
+    expect(diagnose(lt, F.binary64).exactBy).toBe('margin');
+  });
+
+  it('leads with the primary error cause and omits irrelevant noise bullets (flushZero, absorb, cond, doubleRound)', () => {
+    // Underflow flush-to-zero leads with op.flushZero and suppresses irrelevant op.relMul / round.amount / budget
+    const range = runEx('range', [F.binary32]);
+    const yy = range.steps.find((s) => s.text === 'y*y');
+    const uEx = explain(range, yy.id, F.binary32);
+    expect(codes(uEx)[0]).toBe('op.flushZero');
+    expect(codes(uEx)).not.toContain('op.relMul');
+    expect(codes(uEx)).not.toContain('round.amount');
+    expect(codes(uEx)).not.toContain('budget');
+
+    // Absorption warns about hidden damage instead of praising full format precision
+    const assoc = runEx('assoc', [F.binary64]);
+    const bc = assoc.steps.find((s) => s.text === '(b + c)');
+    const aEx = explain(assoc, bc.id, F.binary64);
+    expect(codes(aEx)[0]).toBe('op.absorbTotal');
+    expect(codes(aEx)).toContain('verdict.absorbedWarning');
+    expect(codes(aEx)).not.toContain('verdict.newErrorFull');
+    expect(codes(aEx)).not.toContain('op.addBits');
+
+    // Ill-conditioned function leads with conditioning + error source before generic transcendental note
+    const sb = runEx('sinBig', [F.binary32]);
+    const sEx = explain(sb, sb.result, F.binary32);
+    expect(codes(sEx)[0]).toBe('fn.cond');
+    expect(codes(sEx)[1]).toBe('op.lostAt');
+
+    // Double rounding leads with cast.doubleRounding as bullet #1
+    const dr = runEx('doubleRound', [F.x87]);
+    const dEx = explain(dr, dr.result, F.x87);
+    expect(codes(dEx)[0]).toBe('cast.doubleRounding');
+    expect(codes(dEx)).not.toContain('cast.what');
+  });
+
+  it('holds universal explainer invariants across built-in examples, all 6 formats and all 5 rounding modes', () => {
+    const modes = ['RNE', 'RNA', 'RZ', 'RU', 'RD'];
+    const heavy = new Set(['order', 'kahansum', 'taylor', 'recurrence', 'golden', 'muller', 'logistic']);
+    for (const ex of EXAMPLES) {
+      // Heavy multi-iteration loops are tested in RNE (2000+ steps in order/kahansum); all 18 other examples across all 5 modes
+      const exModes = heavy.has(ex.id) ? ['RNE'] : modes;
+      for (const mode of exModes) {
+        const r = evaluate({ program: ex.program, variables: ex.variables, formats: FORMATS, mode });
+        for (const f of FORMATS) {
+          diagnose(r, f);
+          for (const st of r.steps) {
+            const exp = explainStep(st, r.steps, f, mode, { trace: false });
+            const c = codes(exp);
+            const res = st.fmt[f.id];
+            const cmp = exp.cmp;
+            const tag = `${ex.id} ${f.id} ${mode} #${st.id}`;
+            if (c.includes('conv.subnormal') || c.includes('op.subnormal')) {
+              expect(isSubnormal(res.value, f), tag).toBe(true);
+            }
+            if (cmp.status === 'exact') {
+              expect(c, tag).not.toContain('op.cancelAmplify');
+              expect(c, tag).not.toContain('op.cancelMild');
+              expect(c, tag).not.toContain('op.exactZeroLost');
+              expect(c, tag).not.toContain('prop.operands');
+            }
+            if (st.exact.beyond) {
+              expect(c, tag).not.toContain('verdict.exact');
+            }
+            expect(c.includes('fn.cond') && c.includes('verdict.gainedDamped'), tag).toBe(false);
+            expect(c.includes('op.fmaExact') && c.includes('op.exact'), tag).toBe(false);
+            if (res.round?.direction === 'exact') {
+              expect(c, tag).not.toContain('round.amount');
+            }
+          }
+        }
+      }
+    }
+  }, 60000);
 });

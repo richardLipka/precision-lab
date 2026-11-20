@@ -12,10 +12,10 @@
 import { parseProgram, COMPARISONS } from './parser.js';
 import { EngineError } from './messages.js';
 import {
-  parseLiteral, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactAbs, exactFma, exact, ONE, Fraction, log10Abs,
+  parseLiteral, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactAbs, exactFma, exact, ZERO, ONE, Fraction, log10Abs,
 } from './rational.js';
 import { fromExact, fpOp, CASTS, orderSatisfies } from './ieee.js';
-import { setRealDigits, realDigits, realOp, realNeg, realAbs, exactFunction, exactPi, FUNCTION_NAMES, limitSize } from './real.js';
+import { setRealDigits, realDigits, realOp, realNeg, realAbs, exactFunction, exactPi, FUNCTION_NAMES, limitSize, fracToDec, decCtx } from './real.js';
 import { fpFunction, fpPi } from './fpfunc.js';
 
 export { EngineError };
@@ -69,12 +69,39 @@ export function exactCompare(op, a, b) {
  */
 export function exactOrder(a, b) {
   if (a.kind === 'nan' || b.kind === 'nan') return { order: null, undecided: false };
+  // Stand-in values beyond ±10^MAX_DEC_EXP are still finite and nonzero!
+  if (a.beyond || b.beyond) {
+    // True ±∞ is strictly beyond any finite (even beyond-huge) value.
+    if (a.kind === 'inf' && !a.beyond) return { order: a.sign ? -1 : 1, undecided: false };
+    if (b.kind === 'inf' && !b.beyond) return { order: b.sign ? 1 : -1, undecided: false };
+    // Beyond-huge stand-ins (kind:'inf', beyond:true) are finite with |x| > 10^MAX_DEC_EXP.
+    if ((a.kind === 'inf' && a.beyond) || (b.kind === 'inf' && b.beyond)) {
+      const sa = a.kind === 'inf' ? (a.sign ? -1 : 1) : (a.b ? (a.b.isZero() ? 0 : a.b.isNeg() ? -1 : 1) : (a.r.n === 0n ? 0 : a.r.s < 0n ? -1 : 1));
+      const sb = b.kind === 'inf' ? (b.sign ? -1 : 1) : (b.b ? (b.b.isZero() ? 0 : b.b.isNeg() ? -1 : 1) : (b.r.n === 0n ? 0 : b.r.s < 0n ? -1 : 1));
+      if (sa !== sb) return { order: Math.sign(sa - sb), undecided: false };
+      if (a.kind === 'inf' && b.kind !== 'inf' && !b.beyond) return { order: a.sign ? -1 : 1, undecided: false };
+      if (b.kind === 'inf' && a.kind !== 'inf' && !a.beyond) return { order: b.sign ? 1 : -1, undecided: false };
+      return { order: null, undecided: false };
+    }
+    // Beyond-tiny stand-ins carry their real nonzero Decimal in `.b` when produced by real.js.
+    const dec = (x) => {
+      if (x.b) return x.b;
+      if (x.beyond) return null;
+      return fracToDec(x.r, decCtx(30));
+    };
+    const da = dec(a);
+    const db = dec(b);
+    if (!da || !db) return { order: null, undecided: false };
+    const cmp = da.comparedTo(db);
+    return { order: cmp, undecided: cmp === 0 };
+  }
   if (a.kind === 'inf' || b.kind === 'inf') {
     const rank = (x) => (x.kind === 'inf' ? (x.sign ? -1 : 1) : 0);
     return { order: Math.sign(rank(a) - rank(b)), undecided: false };
   }
   const order = a.r.compare(b.r);
-  if (order !== 0 && (a.approx || b.approx)) {
+  if (a.approx || b.approx) {
+    if (order === 0) return { order: 0, undecided: a !== b };
     // log10 of the uncertainty of each reference (−∞ for an exact one)
     const unc = (x) => (!x.approx ? -Infinity : x.r.n === 0n ? (x.reliable > 0 ? -Infinity : Infinity) : log10Abs(x.r) - (x.reliable - COMPARE_SLACK_DIGITS));
     if (log10Abs(a.r.sub(b.r)) <= Math.max(unc(a), unc(b))) return { order: 0, undecided: true };
@@ -150,10 +177,18 @@ export function evaluate({ variables = [], program = '', formats, mode = 'RNE', 
     const ops = operandIds.map((id) => steps[id]);
     // The exact chain does not depend on the formats: a sweep reuses it between chunks.
     let ex = exactCache?.[steps.length] ?? limitSize(EXACT_OPS[op](ops.map((s) => s.exact)));
-    // An operand beyond the reference's range is only a stand-in (∞ or 0): an ∞ or NaN
-    // computed from it stands in for an unknown finite value too (tiny stand-ins keep
-    // their mark through the decimal reference, see approxValue).
-    if (!ex.beyond && (ex.kind === 'inf' || ex.kind === 'nan') && ops.some((s) => s.exact.beyond)) ex = { ...ex, beyond: true };
+    // An operand beyond the reference's range is only a stand-in (∞ or 0): an ∞, NaN,
+    // or stand-in 0 (e.g. 1 / exp(10^6), exp(-exp(10^6))) computed from it stands in for
+    // an unknown finite/nonzero value too, so never report it as exact 0 or ∞.
+    const anyBeyond = ops.some((s) => s.exact.beyond);
+    if (!ex.beyond && anyBeyond) {
+      if (ex.kind === 'inf' || ex.kind === 'nan') {
+        ex = { ...ex, beyond: true };
+      } else if (ex.kind === 'finite' && ex.r.n === 0n && !COMPARISONS.includes(op) && !CASTS[op]
+        && !((op === '*' || op === '/') && ops.some((s) => !s.exact.beyond && s.exact.kind === 'finite' && s.exact.r.n === 0n))) {
+        ex = { kind: 'finite', approx: true, r: ZERO, reliable: 0, beyond: true };
+      }
+    }
     if (exactCache) exactCache[steps.length] = ex;
     const fmt = {};
     for (const f of formats) {

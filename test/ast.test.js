@@ -70,6 +70,11 @@ describe('rules', () => {
     const out = print(applyRule(expr(src), [], 'reassocLeft'));
     expect(sameMeaning(src, out, [{ name: 'a', value: '1' }, { name: 'b', value: '2' }, { name: 'c', value: '0' }]).ok).toBe(false);
     expect(sameMeaning(src, out, [{ name: 'a', value: '1' }, { name: 'b', value: '2' }, { name: 'c', value: '3' }]).ok).toBe(true);
+    // Zero verified digits or beyond-range stand-ins are never treated as equal
+    expect(sameMeaning('(1 - cos(x)) / (x * x)', '0', [{ name: 'x', value: '1e-60' }], 60).ok).toBe(false);
+    expect(sameMeaning('exp(-1000000)', '0', [], 60).ok).toBe(false);
+    // refDigits is honoured: 1 + 1e-70 vs 1 agree at 60 digits but differ at 100 digits
+    expect(sameMeaning('1 + exp(-160)', '1', [], 100).ok).toBe(false);
   });
 
   it('commutativity never changes a rounded result, associativity can', () => {

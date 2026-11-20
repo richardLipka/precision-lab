@@ -6,7 +6,7 @@ import { makeFormat, shortestDecimal, exactShort, roundFraction, fpToFraction } 
 import { compareToExact, rawDigits, capDigits, fullDigits, LOG10_2 } from './metrics.js';
 import { fmtFrac, log10Abs, log2Big, dyadic } from './rational.js';
 import { EngineError } from './messages.js';
-import { approxText } from './real.js';
+import { approxText, MAX_DEC_EXP } from './real.js';
 
 export { LOG10_2 };
 export const MAX_PRECISION = 100000;
@@ -57,7 +57,7 @@ export function parsePrecisions(text) {
  * reduction), exact to ~15 digits in the log. Views cap it with capDigits.
  */
 function fastDigits(v, X, fmt) {
-  if (X.kind !== 'finite' || (v.kind !== 'finite' && v.kind !== 'zero')) return rawDigits(compareToExact(v, X, fmt));
+  if (X.beyond || X.kind !== 'finite' || (v.kind !== 'finite' && v.kind !== 'zero')) return rawDigits(compareToExact(v, X, fmt));
   const vm = v.kind === 'zero' ? 0n : v.sign ? -v.m : v.m;
   const q = v.kind === 'zero' ? 0 : v.q;
   const k = q < 0 ? -q : 0;
@@ -92,12 +92,14 @@ export function runSweep(cfg, onProgress) {
       meta = {
         result: res.result,
         steps: res.steps.map((s) => ({ id: s.id, text: s.text, kind: s.kind, op: s.op, lastAssigned: s.lastAssigned || null, iter: s.iter })),
-        exact: root ? (root.exact.approx ? '≈ ' + approxText(root.exact, 30) : exactShort(root.exact, 30)) : '—',
+        exact: root ? (root.exact.beyond
+          ? (root.exact.kind === 'inf' ? `${root.exact.sign ? '< −' : '> '}10^${MAX_DEC_EXP}` : root.exact.kind === 'nan' ? '?' : `0 < |x| < 10^−${MAX_DEC_EXP}`)
+          : root.exact.approx ? '≈ ' + approxText(root.exact, 30) : exactShort(root.exact, 30)) : '—',
         exactApprox: !!root?.exact.approx,
         reliable: root?.exact.approx ? root.exact.reliable : null,
         refDigits: res.refDigits,
-        exactKind: root ? root.exact.kind : 'nan',
-        exactLog10: root && root.exact.kind === 'finite' && root.exact.r.n !== 0n ? log10Abs(root.exact.r) : null,
+        exactKind: root ? (root.exact.beyond ? 'beyond' : root.exact.kind) : 'nan',
+        exactLog10: root && !root.exact.beyond && root.exact.kind === 'finite' && root.exact.r.n !== 0n ? log10Abs(root.exact.r) : null,
         resultName: root ? root.lastAssigned || root.text : '',
       };
     }
@@ -120,6 +122,7 @@ export function runSweep(cfg, onProgress) {
           log10Abs: cmp.status === 'exact' ? -Infinity : cmp.status === 'approx' ? log10(cmp.abs) : Infinity,
           log10Rel: cmp.status === 'exact' ? -Infinity : cmp.status === 'approx' && cmp.rel ? cmp.log10Rel : Infinity,
           absText: cmp.status === 'approx' ? fmtFrac(cmp.abs, 3, { plainMin: -3, plainMax: 5 }) : null,
+          relText: cmp.status === 'approx' && cmp.rel ? fmtFrac(cmp.rel, 3, { plainMin: -3, plainMax: 5 }) : null,
           ...bestPossible(root.exact, f),
         };
       }
@@ -141,16 +144,23 @@ function log10(r) {
  * (The bound of one rounding, u·|x| = 2^−p·|x|, is only an upper limit of it.)
  */
 export function bestPossible(X, fmt) {
-  if (X.kind !== 'finite') return { bestLog10Abs: null, bestLog10Rel: null, bestDigits: null };
+  if (X.beyond || X.kind !== 'finite') return { bestLog10Abs: null, bestLog10Rel: null, bestDigits: null };
   const r = roundFraction(X.r, fmt, 'RNE').value;
   if (r.kind !== 'finite' && r.kind !== 'zero') return { bestLog10Abs: null, bestLog10Rel: null, bestDigits: null };
   const err = fpToFraction(r).sub(X.r).abs();
-  if (err.n === 0n) return { bestLog10Abs: -Infinity, bestLog10Rel: X.r.n === 0n ? null : -Infinity, bestDigits: Infinity, bestText: '0' };
+  if (err.n === 0n) return { bestLog10Abs: -Infinity, bestLog10Rel: X.r.n === 0n ? null : -Infinity, bestDigits: Infinity, bestText: '0', bestRelText: X.r.n === 0n ? null : '0' };
   const la = log10Abs(err);
   const lr = X.r.n === 0n ? null : la - log10Abs(X.r);
   let d = lr == null ? null : Math.max(0, -lr);
   if (d != null && X.approx) d = Math.min(d, X.reliable);
-  return { bestLog10Abs: la, bestLog10Rel: lr, bestDigits: d, bestText: fmtFrac(err, 3, { plainMin: -3, plainMax: 5 }) };
+  const rel = X.r.n === 0n ? null : err.div(X.r.abs());
+  return {
+    bestLog10Abs: la,
+    bestLog10Rel: lr,
+    bestDigits: d,
+    bestText: fmtFrac(err, 3, { plainMin: -3, plainMax: 5 }),
+    bestRelText: rel ? fmtFrac(rel, 3, { plainMin: -3, plainMax: 5 }) : null,
+  };
 }
 
 function fracOf(v) {

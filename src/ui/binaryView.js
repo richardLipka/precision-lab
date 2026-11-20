@@ -17,6 +17,7 @@
 import { encode, fpToFraction, shortestDecimal, binarySci, FORMATS } from '../engine/ieee.js';
 import { COMPARISONS } from '../engine/parser.js';
 import { floorLog2, fmtFrac, dyadic, Fraction } from '../engine/rational.js';
+import { MAX_DEC_EXP } from '../engine/real.js';
 import { escapeHtml } from './chart.js';
 import { t } from '../i18n.js';
 
@@ -35,17 +36,25 @@ const CMP_OPS = new Set(COMPARISONS);
 const FORMAT_P = Object.fromEntries(FORMATS.map((f) => [f.id, f.p]));
 const OP_TEXT = { '+': '+', '-': '−', '*': '·', '/': '/', '==': '=', '!=': '≠', '<': '<', '<=': '≤', '>': '>', '>=': '≥' };
 
-/** Compact coloured bit fields of a stored value (no legend). */
-export function bitFields(v, fmt) {
+/** Compact coloured bit fields of a stored value (optional diff highlight against a peer). */
+export function bitFields(v, fmt, peerEnc = null) {
   const enc = encode(v, fmt);
   if (enc.unbounded) {
     if (v.kind !== 'finite') return `<span class="mono">${escapeHtml(shortestDecimal(v, fmt))}</span>`;
     return `<span class="bits-inline"><span class="b-sign">${enc.sign}</span> <span class="b-frac">${enc.significand[0]}.${enc.significand.slice(1)}</span> ×2${sup(enc.exponentValue)}</span>`;
   }
+  const mark = (s, other) => {
+    if (!other || other.length !== s.length) return s;
+    let out = '';
+    for (let i = 0; i < s.length; i++) out += s[i] !== other[i] ? `<span class="bit-diff">${s[i]}</span>` : s[i];
+    return out;
+  };
+  const signHtml = `<span class="b-sign">${mark(enc.sign, peerEnc?.sign)}</span>`;
+  const expHtml = `<span class="b-exp">${mark(enc.exponent, peerEnc?.exponent)}</span>`;
   const frac = fmt.explicitBit
-    ? `<span class="b-int">${enc.fraction[0]}</span><span class="b-frac">${enc.fraction.slice(1)}</span>`
-    : `<span class="b-frac">${enc.fraction}</span>`;
-  return `<span class="bits-inline"><span class="b-sign">${enc.sign}</span><span class="b-exp">${enc.exponent}</span>${frac}</span>`;
+    ? `<span class="b-int">${mark(enc.fraction[0], peerEnc?.fraction?.[0])}</span><span class="b-frac">${mark(enc.fraction.slice(1), peerEnc?.fraction?.slice(1))}</span>`
+    : `<span class="b-frac">${mark(enc.fraction, peerEnc?.fraction)}</span>`;
+  return `<span class="bits-inline">${signHtml}${expHtml}${frac}</span>`;
 }
 
 /**
@@ -104,8 +113,8 @@ function storedSciHtml(v, fmt) {
 }
 
 /** Aligned positional view for + and −: the significands shifted to a common exponent. */
-function alignedHtml(rows, cutQ) {
-  // rows: {label, m (BigInt, ≥ 0), q, neg, cls, cut?}
+function alignedHtml(rows, cutQ, { cancelledAbove = null, showCutoff = false } = {}) {
+  // rows: {label, m (BigInt, ≥ 0), q, neg, cls, cut?, operand?}
   const nonzero = rows.filter((r) => r.m !== 0n);
   if (!nonzero.length) return '';
   let hi = Math.max(...nonzero.map((r) => r.q + r.m.toString(2).length - 1));
@@ -116,29 +125,40 @@ function alignedHtml(rows, cutQ) {
   if (hi < 0 && -hi <= POINT_REACH) hi = 0;
   if (lo > -1 && lo + 1 <= POINT_REACH) lo = -1;
   const hasPoint = hi >= 0 && lo <= -1;
+  const hasCut = showCutoff && cutQ > lo && cutQ <= hi;
   const width = hi - lo + 1;
   if (width > MAX_ALIGNED) return `<p class="muted small">${escapeHtml(t('bin.tooWide', { n: width }))}</p>`;
+  const cutMark = `<span class="bin-cut" title="${escapeHtml(t('bin.cutoff'))}">│</span>`;
   const header = `<tr class="bin-head"><th></th><td class="mono">${Array.from({ length: width }, (_, i) => {
     const k = hi - i;
     const mark = k === 0 ? '0' : k % 4 === 0 ? '|' : ' ';
-    return `${k === -1 ? '<span class="bin-point"> </span>' : ''}${mark}`;
+    return `${hasCut && k === cutQ - 1 ? cutMark : ''}${k === -1 ? '<span class="bin-point"> </span>' : ''}${mark}`;
   }).join('')}</td></tr>`;
   const body = rows.map((r) => {
     const top = r.m === 0n ? lo - 1 : r.q + r.m.toString(2).length - 1;
     const cells = [];
     for (let k = hi; k >= lo; k--) {
       let ch;
-      if (r.m === 0n || k > top || k < r.q) ch = '<span class="bin-pad">·</span>';
+      const isPad = r.m === 0n || k > top || k < r.q;
+      if (isPad) ch = '<span class="bin-pad">·</span>';
       else ch = ((r.m >> BigInt(k - r.q)) & 1n) === 1n ? '1' : '0';
-      if (r.cut && k < cutQ && !ch.includes('bin-pad')) ch = `<span class="${k === cutQ - 1 ? 'bin-guard' : 'bin-sticky'}">${ch}</span>`;
+      if (!isPad) {
+        if (r.cut && k < cutQ) ch = `<span class="${k === cutQ - 1 ? 'bin-guard' : 'bin-sticky'}">${ch}</span>`;
+        else if (r.operand && cancelledAbove != null && k > cancelledAbove) ch = `<span class="bin-cancelled" title="${escapeHtml(t('bin.cancelled'))}">${ch}</span>`;
+      }
+      if (hasCut && k === cutQ - 1) cells.push(cutMark);
       if (k === -1) cells.push('<span class="bin-point">.</span>');
       cells.push(ch);
     }
     return `<tr class="${r.cls || ''}"><th>${r.label}</th><td class="mono">${r.neg ? '−' : '+'}${cells.join('')}</td></tr>`;
   }).join('');
+  const legendItems = [];
+  if (cancelledAbove != null) legendItems.push(`<span><i class="bin-cancelled"></i>${escapeHtml(t('bin.cancelled'))}</span>`);
+  if (hasCut) legendItems.push(`<span><span class="bin-cut">│</span> ${escapeHtml(t('bin.cutoff'))}</span>`);
+  const legendHtml = legendItems.length ? `<div class="bin-legend small">${legendItems.join('')}</div>` : '';
   return `<div class="bin-scroll"><table class="bin-table">${header}${body}</table></div>
-    <p class="muted small">${escapeHtml(t(hasPoint ? 'bin.alignedNote' : 'bin.alignedNoteFar', { hi, lo }))}</p>
-    <p class="muted small bin-hw">${escapeHtml(t('bin.alignedHw'))}</p>`;
+    ${legendHtml}
+    <p class="muted small">${escapeHtml(t(hasPoint ? 'bin.alignedNote' : 'bin.alignedNoteFar', { hi, lo }))}</p>`;
 }
 
 function dyadicOf(r) {
@@ -162,11 +182,11 @@ function formalHtml(step, steps, fmt, res, mode) {
   const names = step.operands.map((id) => nameOf(steps[id]));
   let expr;
   if (step.kind !== 'op') expr = escapeHtml(step.source ?? step.text);
-  else if (OP_TEXT[step.op]) expr = `${names[0]} ${OP_TEXT[step.op]} ${names[1]}`;
-  else if (step.op === 'fma') expr = `${names[0]}·${names[1]} + ${names[2]}`;
-  else if (step.op === 'neg') expr = `−${names[0]}`;
-  else if (step.op === 'abs') expr = `|${names[0]}|`;
-  else expr = `${step.op}(${names.join(', ')})`;
+  else if (OP_TEXT[step.op]) expr = `${escapeHtml(names[0])} ${escapeHtml(OP_TEXT[step.op])} ${escapeHtml(names[1])}`;
+  else if (step.op === 'fma') expr = `${escapeHtml(names[0])}·${escapeHtml(names[1])} + ${escapeHtml(names[2])}`;
+  else if (step.op === 'neg') expr = `−${escapeHtml(names[0])}`;
+  else if (step.op === 'abs') expr = `|${escapeHtml(names[0])}|`;
+  else expr = `${escapeHtml(step.op)}(${names.map(escapeHtml).join(', ')})`;
   const lhs = step.lastAssigned && step.lastAssigned.length <= 8 ? `${step.lastAssigned}̂` : 'x̂';
   const lines = [];
   if (!R) {
@@ -185,6 +205,8 @@ function formalHtml(step, steps, fmt, res, mode) {
     const u = nearest ? `u = 2${sup(-fmt.p)}` : `2u = 2${sup(1 - fmt.p)}`;
     if (R.overflow) {
       lines.push(`<div class="fx-line mono">|${expr}| > Ω  ⇒  ${lhs} = ${escapeHtml(shortestDecimal(res.value, fmt))}</div><div class="muted small">${escapeHtml(t('fx.overflow'))}</div>`);
+    } else if (res.exactOp.beyond) {
+      lines.push(`<div class="muted small">${escapeHtml(t('fx.beyond', { max: MAX_DEC_EXP }))}</div>`);
     } else if (res.exactOp.kind === 'finite' && (res.value.kind === 'finite' || res.value.kind === 'zero')) {
       const x = res.exactOp.r;
       const err = fpToFraction(res.value).sub(x);
@@ -225,20 +247,29 @@ function decisionRule(R, mode, lastKept) {
 
 /**
  * The whole "bit by bit" section of the detail panel: the concrete bits first
- * (operands, aligned significands, scientific form, the rounding decision), the
- * formal notation last, for readers who know binary but not numerical analysis.
+ * (operands, aligned significands with cancellation/cutoff highlights, scientific
+ * form, the rounding decision), with G/R/S theory and formal notation tucked into
+ * clean collapsible disclosures so the visual bit tables stay uncluttered.
  */
 export function binaryOperationHtml(step, steps, fmt, res, mode) {
   const parts = [];
+  const isCmp = step.kind === 'op' && CMP_OPS.has(step.op);
 
-  // Operands as stored
+  // Operands as stored (on comparisons, diff-highlight the exact bits where operands differ)
   if (step.kind === 'op') {
-    const rows = step.operands.map((id) => {
+    const peerEncs = isCmp && step.operands.length === 2
+      ? step.operands.map((id) => {
+        const ov = steps[id].fmt[fmt.id].value;
+        return ov.kind === 'finite' || ov.kind === 'zero' ? encode(ov, fmt) : null;
+      })
+      : null;
+    const rows = step.operands.map((id, idx) => {
       const s = steps[id];
       const v = s.fmt[fmt.id].value;
-      return `<tr><th><a href="#" class="step-link" data-step="${id}">#${id}</a> ${escapeHtml(nameOf(s))}</th><td><span class="mono small">${escapeHtml(shortestDecimal(v, fmt))}</span><div class="bin-scroll">${bitFields(v, fmt)}</div></td></tr>`;
+      const peer = peerEncs && peerEncs[0] && peerEncs[1] && !peerEncs[0].unbounded ? peerEncs[1 - idx] : null;
+      return `<tr><th><a href="#" class="step-link" data-step="${id}">#${id}</a> ${escapeHtml(nameOf(s))}</th><td><span class="mono small">${escapeHtml(shortestDecimal(v, fmt))}</span><div class="bin-scroll">${bitFields(v, fmt, peer)}</div></td></tr>`;
     }).join('');
-    parts.push(`<h4>${escapeHtml(t('bin.operands'))}</h4><table class="bin-ops">${rows}</table>`);
+    parts.push(`<h4>${escapeHtml(t(isCmp ? 'bin.cmpOperands' : 'bin.operands'))}</h4><table class="bin-ops">${rows}</table>`);
   }
 
   const R = res.round;
@@ -246,51 +277,72 @@ export function binaryOperationHtml(step, steps, fmt, res, mode) {
   const v = res.value;
 
   // Aligned view for addition / subtraction of finite operands
+  let hasAligned = false;
   if (step.kind === 'op' && (step.op === '+' || step.op === '-') && exactR) {
     const ops = step.operands.map((id) => steps[id].fmt[fmt.id].value);
     if (ops.every((o) => o.kind === 'finite' || o.kind === 'zero')) {
       const row = (o, label, flip = false) => ({
-        label, m: o.kind === 'zero' ? 0n : o.m, q: o.kind === 'zero' ? 0 : o.q, neg: (o.sign === 1) !== flip,
+        label, m: o.kind === 'zero' ? 0n : o.m, q: o.kind === 'zero' ? 0 : o.q, neg: (o.sign === 1) !== flip, operand: true,
       });
+      const r0 = row(ops[0], escapeHtml(nameOf(steps[step.operands[0]])));
+      const r1 = row(ops[1], `${step.op === '-' ? '−' : '+'} ${escapeHtml(nameOf(steps[step.operands[1]]))}`, step.op === '-');
       const ex = exactR.n === 0n ? { m: 0n, q: 0 } : dyadicOf(exactR.abs());
-      const E = exactR.n === 0n ? 0 : floorLog2(exactR.abs());
-      const cutQ = (fmt.bounded && E < fmt.emin ? fmt.emin : E) - fmt.p + 1;
+      const nonzeroOps = ops.filter((o) => o.kind === 'finite');
+      const E = exactR.n === 0n ? null : floorLog2(exactR.abs());
+      const cutQ = E == null
+        ? (nonzeroOps.length ? Math.min(...nonzeroOps.map((o) => o.q)) : 0)
+        : (fmt.bounded && E < fmt.emin ? fmt.emin : E) - fmt.p + 1;
+      // Highlight cancelled leading bits whenever effective subtraction drops ≥ 2 leading bit columns.
+      let cancelledAbove = null;
+      if (r0.m !== 0n && r1.m !== 0n && r0.neg !== r1.neg) {
+        const top0 = r0.q + r0.m.toString(2).length - 1;
+        const top1 = r1.q + r1.m.toString(2).length - 1;
+        const topOp = Math.min(top0, top1);
+        const topRes = E == null ? Math.min(r0.q, r1.q) - 1 : E;
+        if (topOp - topRes >= 2) cancelledAbove = topRes;
+      }
       const rows = [
-        row(ops[0], escapeHtml(nameOf(steps[step.operands[0]]))),
-        row(ops[1], `${step.op === '-' ? '−' : '+'} ${escapeHtml(nameOf(steps[step.operands[1]]))}`, step.op === '-'),
+        r0, r1,
         { label: '= ' + escapeHtml(t('bin.exact')), m: ex.m, q: ex.q, neg: exactR.s < 0n, cls: 'bin-exact', cut: true },
       ];
       if (v.kind === 'finite') rows.push({ label: '→ ' + escapeHtml(t('bin.result')), m: v.m, q: v.q, neg: v.sign === 1, cls: 'bin-result' });
-      parts.push(`<h4>${escapeHtml(t('bin.aligned'))}</h4>${alignedHtml(rows, cutQ)}`);
+      const aligned = alignedHtml(rows, cutQ, { cancelledAbove, showCutoff: !!(R?.inexact && !R.overflow) });
+      if (aligned) {
+        hasAligned = true;
+        parts.push(`<h4>${escapeHtml(t('bin.aligned'))}</h4>${aligned}`);
+      }
     }
   }
 
-  // Significands in binary scientific notation (all operations)
-  const sci = [];
-  if (step.kind === 'op') {
-    for (const id of step.operands) {
-      const o = steps[id].fmt[fmt.id].value;
-      sci.push(sciRow(escapeHtml(nameOf(steps[id])), storedSciHtml(o, fmt)));
+  // Significands in binary scientific notation (omitted on comparisons, where operand bits above already tell the whole story)
+  if (!isCmp) {
+    const sci = [];
+    if (step.kind === 'op') {
+      for (const id of step.operands) {
+        const o = steps[id].fmt[fmt.id].value;
+        sci.push(sciRow(escapeHtml(nameOf(steps[id])), storedSciHtml(o, fmt)));
+      }
+    } else if (exactR) {
+      sci.push(sciRow(escapeHtml(t('bin.literal')), exactR.n === 0n ? '0' : exactSciHtml(exactR, fmt), 'bin-exact'));
     }
-  } else if (exactR) {
-    sci.push(sciRow(escapeHtml(t('bin.literal')), exactR.n === 0n ? '0' : exactSciHtml(exactR, fmt), 'bin-exact'));
-  }
-  // A cast rounds the operand into its target format: mark the bits that format keeps.
-  const cutFmt = res.cast ? FORMATS.find((f) => f.id === res.cast.target) : fmt;
-  if (step.kind === 'op' && exactR && exactR.n !== 0n) sci.push(sciRow('= ' + escapeHtml(t('bin.exact')), exactSciHtml(exactR, cutFmt), 'bin-exact'));
-  sci.push(sciRow('→ ' + escapeHtml(t('bin.result')), storedSciHtml(v, fmt), 'bin-result'));
-  parts.push(`<h4>${escapeHtml(t('bin.scientific'))}</h4><div class="bin-scroll"><table class="bin-table">${sci.join('')}</table></div>
-    <div class="bin-legend small"><span><i class="bin-kept"></i>${escapeHtml(t('bin.keptLegend', { p: cutFmt.p }))}</span><span><i class="bin-guard"></i>${escapeHtml(t('bin.guard'))}</span><span><i class="bin-sticky"></i>${escapeHtml(t('bin.sticky'))}</span></div>`);
-  if (R && R.inexact && !R.overflow) {
-    let lastKept = null;
-    if (exactR && exactR.n !== 0n) {
-      const kept = splitBits(exactR, cutFmt).kept;
-      if (!kept.endsWith('…')) lastKept = kept[kept.length - 1];
+    // A cast rounds the operand into its target format: mark the bits that format keeps.
+    const cutFmt = res.cast ? FORMATS.find((f) => f.id === res.cast.target) : fmt;
+    if (step.kind === 'op' && exactR && exactR.n !== 0n) sci.push(sciRow('= ' + escapeHtml(t('bin.exact')), exactSciHtml(exactR, cutFmt), 'bin-exact'));
+    sci.push(sciRow('→ ' + escapeHtml(t('bin.result')), storedSciHtml(v, fmt), 'bin-result'));
+    parts.push(`<h4>${escapeHtml(t('bin.scientific'))}</h4><div class="bin-scroll"><table class="bin-table">${sci.join('')}</table></div>
+      <div class="bin-legend small"><span><i class="bin-kept"></i>${escapeHtml(t('bin.keptLegend', { p: cutFmt.p }))}</span><span><i class="bin-guard"></i>${escapeHtml(t('bin.guard'))}</span><span><i class="bin-sticky"></i>${escapeHtml(t('bin.sticky'))}</span></div>`);
+    if (R && R.inexact && !R.overflow) {
+      let lastKept = null;
+      if (exactR && exactR.n !== 0n) {
+        const kept = splitBits(exactR, cutFmt).kept;
+        if (!kept.endsWith('…')) lastKept = kept[kept.length - 1];
+      }
+      const rule = decisionRule(R, mode, lastKept);
+      parts.push(`<p class="small bin-decision">${escapeHtml(t('bin.decision', { g: R.guard, s: R.sticky ? 1 : 0, dir: t('dir.' + R.direction), mode: t('mode.' + mode), rule }))}</p>`);
+      const hwNote = hasAligned ? `<p class="muted small bin-hw">${escapeHtml(t('bin.alignedHw'))}</p>` : '';
+      parts.push(`<details class="info-fold bin-theory"><summary>${escapeHtml(t('bin.grsTitle'))}</summary>${hwNote}<p class="muted small bin-grs">${escapeHtml(t(step.op === '+' || step.op === '-' ? 'bin.grs' : 'bin.grsShort'))}</p></details>`);
     }
-    const rule = decisionRule(R, mode, lastKept);
-    parts.push(`<p class="small bin-decision">${escapeHtml(t('bin.decision', { g: R.guard, s: R.sticky ? 1 : 0, dir: t('dir.' + R.direction), mode: t('mode.' + mode), rule }))}</p>`);
-    parts.push(`<p class="muted small bin-grs">${escapeHtml(t(step.op === '+' || step.op === '-' ? 'bin.grs' : 'bin.grsShort'))}</p>`);
   }
-  parts.push(`<h4>${escapeHtml(t('fx.title'))}</h4>${formalHtml(step, steps, fmt, res, mode)}`);
+  parts.push(`<details class="info-fold fx-fold"><summary>${escapeHtml(t('fx.title'))}</summary>${formalHtml(step, steps, fmt, res, mode)}</details>`);
   return parts.join('');
 }

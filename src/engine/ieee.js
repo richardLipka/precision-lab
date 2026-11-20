@@ -199,28 +199,30 @@ export function roundFraction(r, fmt, mode = 'RNE', zeroSign = 0) {
       default: throw new Error('unknown rounding mode ' + mode);
     }
   }
-  // Neighbouring representable numbers (by magnitude), then ordered by value.
-  const lowAbs = normalizeAbs(M, qe, sign, fmt);
-  const highAbs = inexact
-    ? (exceedsMax(M + 1n, qe, fmt) ? fp.inf(sign) : normalizeAbs(M + 1n, qe, sign, fmt))
-    : lowAbs;
-  const below = sign ? highAbs : lowAbs;
-  const above = sign ? lowAbs : highAbs;
-
   const Mr = up ? M + 1n : M;
   let value;
   let overflow = false;
+  let toInf = false;
   if (exceedsMax(Mr, qe, fmt)) {
     overflow = true;
-    const toInf = mode === 'RNE' || mode === 'RNA' || (mode === 'RU' && sign === 0) || (mode === 'RD' && sign === 1);
+    toInf = mode === 'RNE' || mode === 'RNA' || (mode === 'RU' && sign === 0) || (mode === 'RD' && sign === 1);
     value = toInf ? fp.inf(sign) : maxFinite(fmt, sign);
   } else {
     value = normalizeAbs(Mr, qe, sign, fmt);
   }
+  // Neighbouring representable numbers (by magnitude), then ordered by value.
+  const lowAbs = exceedsMax(M, qe, fmt) ? maxFinite(fmt, sign) : normalizeAbs(M, qe, sign, fmt);
+  const highAbs = overflow || (inexact && exceedsMax(M + 1n, qe, fmt))
+    ? fp.inf(sign)
+    : inexact ? normalizeAbs(M + 1n, qe, sign, fmt) : lowAbs;
+  const below = sign ? highAbs : lowAbs;
+  const above = sign ? lowAbs : highAbs;
   // Underflow: tiny before rounding and inexact (IEEE 754 allows either
   // "before" or "after rounding" tininess detection; we use "before").
   const underflow = tiny && inexact;
-  const direction = !inexact ? 'exact' : (up !== (sign === 1) ? 'up' : 'down');
+  const direction = overflow
+    ? (toInf !== (sign === 1) ? 'up' : 'down')
+    : !inexact ? 'exact' : (up !== (sign === 1) ? 'up' : 'down');
   return { value, inexact: inexact || overflow, overflow, underflow, direction, below, above, guard, sticky, tiny };
 }
 
@@ -508,12 +510,28 @@ export function shortestDecimal(v, fmt) {
   if (fmt.p > 160) return formatSci(toSciParts(r, maxDigits));
   for (let k = 1; k <= maxDigits; k++) {
     const parts = toSciParts(r, k);
-    const shift = parts.exp - (k - 1);
-    let n = BigInt(parts.digits);
-    if (parts.negative) n = -n;
-    const back = shift >= 0 ? frac(n * pow10(shift), 1n) : frac(n, pow10(-shift));
-    const rr = roundFraction(back, fmt, 'RNE');
-    if (fpEquals(rr.value, v)) return formatSci(parts);
+    const mag = BigInt(parts.digits);
+    const testMag = (m, exp) => {
+      const s = parts.negative ? -m : m;
+      const sh = exp - (k - 1);
+      const back = sh >= 0 ? frac(s * pow10(sh), 1n) : frac(s, pow10(-sh));
+      return fpEquals(roundFraction(back, fmt, 'RNE').value, v);
+    };
+    if (testMag(mag, parts.exp)) return formatSci(parts);
+    // At powers of two the rounding interval is twice as wide away from zero, so
+    // the next k-digit decimal away from zero can round-trip when the nearest does not.
+    const hiMag = mag + 1n;
+    const tenK = pow10(k);
+    if (hiMag < tenK && testMag(hiMag, parts.exp)) {
+      return formatSci({ negative: parts.negative, digits: hiMag.toString(), exp: parts.exp });
+    }
+    if (hiMag === tenK && testMag(pow10(k - 1), parts.exp + 1)) {
+      return formatSci({ negative: parts.negative, digits: pow10(k - 1).toString(), exp: parts.exp + 1 });
+    }
+    const loMag = mag - 1n;
+    if (loMag >= (k > 1 ? pow10(k - 1) : 1n) && testMag(loMag, parts.exp)) {
+      return formatSci({ negative: parts.negative, digits: loMag.toString(), exp: parts.exp });
+    }
   }
   return formatSci(toSciParts(r, maxDigits));
 }

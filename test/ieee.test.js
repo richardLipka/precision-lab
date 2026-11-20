@@ -6,8 +6,8 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { init } from 'gmp-wasm';
-import { FORMATS, makeFormat, roundFraction, fpOp, fp, encode, fpToFraction, shortestDecimal } from '../src/engine/ieee.js';
-import { frac, Fraction } from '../src/engine/rational.js';
+import { FORMATS, makeFormat, roundFraction, fpOp, fp, encode, fpToFraction, shortestDecimal, exponentOf, fpEquals } from '../src/engine/ieee.js';
+import { frac, Fraction, dyadic, parseLiteral } from '../src/engine/rational.js';
 
 const F = Object.fromEntries(FORMATS.map((f) => [f.id, f]));
 
@@ -283,5 +283,74 @@ describe('format details', () => {
     expect(val(new Fraction(-9, 8), 'RU')).toBe('-1');
     expect(val(new Fraction(-9, 8), 'RD')).toBe('-5/4');
     expect(val(new Fraction(11, 8), 'RNE')).toBe('3/2'); // 1.011 → 1.10 (even)
+    // RNA ties away from zero on both signs, subnormal ties, and overflow ties
+    expect(val(new Fraction(-9, 8), 'RNA')).toBe('-5/4');
+    expect(val(new Fraction(11, 8), 'RNA')).toBe('3/2');
+    expect(fpToFraction(roundFraction(dyadic(1n, -25), F.binary16, 'RNE').value).n).toBe(0n);
+    expect(fpToFraction(roundFraction(dyadic(1n, -25), F.binary16, 'RNA').value).equals(dyadic(1n, -24))).toBe(true);
+    expect(roundFraction(dyadic(1n, -25, 1), F.binary16, 'RNA').value.sign).toBe(1);
+    expect(roundFraction(dyadic((1n << 25n) - 1n, 103), F.binary32, 'RNA').value.kind).toBe('inf');
+  });
+
+  it('overflow direction and below/above neighbours are valid across all 5 modes', () => {
+    const cases = [
+      dyadic(1n, 128), dyadic(1n, 128, 1),
+      dyadic(1n, 128).add(1), dyadic(1n, 128, 1).sub(1),
+    ];
+    for (const r of cases) {
+      const neg = r.s < 0n;
+      for (const mode of ['RNE', 'RNA', 'RZ', 'RU', 'RD']) {
+        const res = roundFraction(r, F.binary32, mode);
+        expect(res.overflow, `${mode} ${r.toFraction()}`).toBe(true);
+        expect(res.inexact, `${mode} ${r.toFraction()}`).toBe(true);
+        const toInf = res.value.kind === 'inf';
+        expect(res.direction, `${mode} neg=${neg} toInf=${toInf}`).toBe(toInf !== neg ? 'up' : 'down');
+        // below and above must always be valid format values (never exponent > emax)
+        if (res.below.kind === 'finite') expect(exponentOf(res.below)).toBeLessThanOrEqual(F.binary32.emax);
+        if (res.above.kind === 'finite') expect(exponentOf(res.above)).toBeLessThanOrEqual(F.binary32.emax);
+        if (!neg) {
+          expect(res.below.kind).toBe('finite');
+          expect(res.above.kind).toBe('inf');
+        } else {
+          expect(res.below.kind).toBe('inf');
+          expect(res.above.kind).toBe('finite');
+        }
+      }
+    }
+  });
+
+  it('shortestDecimal is optimal on every binary64 power of two and every positive binary16 value', () => {
+    const sigCount = (s) => s.replace(/^−|-/, '').replace(/e.*$/, '').replace('.', '').replace(/^0+/, '').replace(/0+$/, '').length;
+    for (let e = -1074; e <= 1023; e++) {
+      const x = 2 ** e;
+      const v = fromDouble(x);
+      const s = shortestDecimal(v, F.binary64).replaceAll('−', '-').replace('e+', 'e');
+      expect(Number(s), `2^${e}`).toBe(x);
+      expect(sigCount(s), `2^${e}: ${s} vs ${String(x)}`).toBeLessThanOrEqual(sigCount(String(x).replace('e+', 'e')));
+    }
+    // Exhaustive positive finite binary16 (including 0x2400 = 2^-5 = 0.03125)
+    for (let bits = 1; bits < 0x7c00; bits++) {
+      const e = (bits >> 10) & 0x1f;
+      const f = bits & 0x3ff;
+      const v = e === 0 ? fp.finite(0, BigInt(f), -24) : fp.finite(0, BigInt(0x400 | f), e - 25);
+      const s = shortestDecimal(v, F.binary16).replaceAll('−', '-');
+      const back = roundFraction(parseDec(s), F.binary16, 'RNE').value;
+      expect(fpEquals(back, v), `0x${bits.toString(16)} → ${s}`).toBe(true);
+    }
+    expect(shortestDecimal(fp.finite(0, 1024n, -15), F.binary16)).toBe('0.03125');
+  });
+
+  it('dyadicSum short-circuits zero operands and parseLiteral rejects division by zero / keeps -0', () => {
+    const unb = makeFormat({ id: 'u', name: 'u', p: 53, expBits: null });
+    const huge = fp.finite(0, 1n << 52n, 1_000_000);
+    const t0 = performance.now();
+    const res = fpOp('+', [fp.zero(0), huge], unb, 'RNE');
+    expect(performance.now() - t0).toBeLessThan(200);
+    expect(fpEquals(res.value, huge)).toBe(true);
+
+    expect(parseLiteral('1/0')).toBeNull();
+    expect(parseLiteral('0/0')).toBeNull();
+    expect(parseLiteral('-0/1')).toMatchObject({ kind: 'finite', negZero: true });
+    expect(parseLiteral('0/-1')).toMatchObject({ kind: 'finite', negZero: true });
   });
 });
