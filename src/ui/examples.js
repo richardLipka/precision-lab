@@ -43,7 +43,7 @@ export const EXAMPLES = [
     title: { en: 'Representation error', cs: 'Chyba reprezentace' },
     blurb: {
       en: 'Converting decimal inputs is already a rounding step: 0.1 and 1/3 are periodic in binary, 16777217 = 2²⁴+1 needs 25 bits (float holds 24), 1e-40 is subnormal in float and 1e39 overflows it. The program is empty: every row of the table is an input conversion.',
-      cs: 'Už převod desetinných vstupů je zaokrouhlení: 0.1 i 1/3 jsou ve dvojkové soustavě periodické, 16777217 = 2²⁴+1 potřebuje 25 bitů (float jich má 24), 1e-40 je ve floatu subnormální a 1e39 ho přeteče. Program je prázdný: každý řádek tabulky je převod vstupu.',
+      cs: 'Už převod desetinných vstupů je zaokrouhlení: 0.1 i 1/3 jsou ve dvojkové soustavě periodické, 16777217 = 2²⁴+1 potřebuje 25 bitů (float jich má 24), 1e-40 je ve floatu subnormální a 1e39 ve floatu přeteče. Program je prázdný: každý řádek tabulky je převod vstupu.',
     },
     lesson: {
       en: 'Error can enter before any arithmetic is done; an input that looks exact in decimal is usually not exact in binary.',
@@ -110,7 +110,7 @@ export const EXAMPLES = [
     },
     lesson: {
       en: 'An invalid or overflowing step does not stop the program: ∞ and NaN flow silently into every later result, so check for them where they can arise.',
-      cs: 'Neplatný nebo přetečený krok program nezastaví: ∞ a NaN potichu proniknou do všech dalších výsledků, proto je kontrolujte tam, kde mohou vzniknout.',
+      cs: 'Chybný krok nebo přetečení program nezastaví: ∞ a NaN potichu proniknou do všech dalších výsledků, proto je kontrolujte tam, kde mohou vzniknout.',
     },
     look: {
       en: 'the cause chips and the flags (DIV0, INV) in the step table; click a step to read the rule.',
@@ -203,7 +203,7 @@ export const EXAMPLES = [
     title: { en: 'Kahan (compensated) summation', cs: 'Kahanovo (kompenzované) sčítání' },
     blurb: {
       en: 'Adding 0.1 two hundred times. The plain loop accumulates a rounding error in every step; Kahan’s algorithm carries the lost low-order part in c and adds it back, so even in float it ends at the correctly rounded 20.',
-      cs: 'Dvě stě krát se přičte 0.1. Obyčejný cyklus v každém kroku přidá chybu zaokrouhlení; Kahanův algoritmus si ztracenou nižší část nese v c a vrací ji zpět, takže i ve floatu skončí na správně zaokrouhlené hodnotě 20.',
+      cs: 'Dvěstěkrát se přičte 0.1. Obyčejný cyklus v každém kroku přidá chybu zaokrouhlení; Kahanův algoritmus si ztracenou nižší část nese v c a vrací ji zpět, takže i ve floatu skončí na správně zaokrouhlené hodnotě 20.',
     },
     lesson: {
       en: 'A few extra operations can recover the error of each addition: compensated summation is the practical cure when the order of the terms cannot be chosen.',
@@ -512,7 +512,7 @@ export const EXAMPLES = [
     title: { en: 'Double rounding', cs: 'Dvojí zaokrouhlení' },
     blurb: {
       en: 'The exact sum 1 + 2⁻⁵³ + 2⁻⁶⁴ rounded once to double gives 1 + 2⁻⁵² (double column, step s). x87 first rounds it to 64 bits, which lands exactly halfway between two doubles, and double(s) then rounds that tie to even: 1. Rounding twice is not the same as rounding once.',
-      cs: 'Přesný součet 1 + 2⁻⁵³ + 2⁻⁶⁴ zaokrouhlený jednou do doublu dá 1 + 2⁻⁵² (sloupec double, krok s). x87 ho nejprve zaokrouhlí na 64 bitů, čímž skončí přesně uprostřed mezi dvěma doubly, a double(s) pak tuto remízu zaokrouhlí k sudému: 1. Dvě zaokrouhlení nejsou totéž co jedno.',
+      cs: 'Přesný součet 1 + 2⁻⁵³ + 2⁻⁶⁴ zaokrouhlený jednou do doublu dá 1 + 2⁻⁵² (sloupec double, krok s). x87 ho nejprve zaokrouhlí na 64 bitů, čímž skončí přesně uprostřed mezi dvěma doubly, a double(s) pak tuto shodu zaokrouhlí k sudému: 1. Dvě zaokrouhlení nejsou totéž co jedno.',
     },
     lesson: {
       en: 'A program that computes in x87 extended registers and stores to double can give a different result than pure double arithmetic; the result then depends on the compiler and the hardware.',
@@ -528,7 +528,7 @@ export const EXAMPLES = [
   {
     id: 'decimalVsBinary',
     group: 'hardware',
-    title: { en: 'Binary vs. decimal64 & fixed-point', cs: 'Dvojkový vs. decimal64 a pevná řádová čárka' },
+    title: { en: 'Binary vs. decimal64 & fixed-point', cs: 'Dvojkové formáty vs. decimal64 a pevná řádová čárka' },
     blurb: {
       en: 'Compare binary floating point (double) with IEEE 754 decimal64 (BID / DPD) and fixed-point DEC(18,4) / Q16.16. In base 10, 0.1 + 0.2 == 0.3 is exact — no representation error — yet 1/3 still repeats in every format. Adding 1e12 + 0.0001 stays exact in decimal64 and DEC(18,4), while 0.01 × 0.001 underflows to 0 in DEC(18,4) because fixed point has no floating exponent.',
       cs: 'Porovnání dvojkové pohyblivé řádové čárky (double) s IEEE 754 decimal64 (BID / DPD) a pevnou řádovou čárkou DEC(18,4) / Q16.16. V desítkové soustavě platí 0.1 + 0.2 == 0.3 přesně — bez chyby reprezentace — ale 1/3 má periodu v každém formátu. Součet 1e12 + 0.0001 zůstane přesný v decimal64 i DEC(18,4), zatímco 0.01 × 0.001 v DEC(18,4) podteče na 0, protože pevná řádová čárka nemá pohyblivý exponent.',
@@ -547,18 +547,18 @@ export const EXAMPLES = [
   {
     id: 'fixedOverflow',
     group: 'hardware',
-    title: { en: 'Fixed-point overflow: saturation vs. wraparound', cs: 'Přetečení v pevné řádové čárce: saturace vs. přetečení mod 2ⁿ' },
+    title: { en: 'Fixed-point overflow: saturation vs. wraparound', cs: 'Přetečení v pevné řádové čárce: saturace vs. dvojkový doplněk (mod 2ⁿ)' },
     blurb: {
       en: 'Q16.16 stores signed numbers in [−32768, 32767.999985] with fixed step Δ = 2⁻¹⁶. Adding 20000 + 20000 = 40000 exceeds the range: under saturation (ARM DSP / ISO TR 18037 _Sat) it clamps to +32767.999985; under two’s-complement wraparound it wraps modulo 2³² to −25536 (wrong sign!). Even (20000 × 2) / 4 fails because the intermediate product overflows before dividing back into range.',
       cs: 'Q16.16 ukládá čísla se znaménkem v [−32768, 32767.999985] s pevným krokem Δ = 2⁻¹⁶. Součet 20000 + 20000 = 40000 rozsah překročí: při saturaci (ARM DSP / ISO TR 18037 _Sat) se omezí na +32767.999985; při přetečení ve dvojkovém doplňku (mod 2³²) přeskočí na −25536 (opačné znaménko!). Selže i (20000 × 2) / 4, protože mezivýsledek přeteče dřív, než ho dělení vrátí do rozsahu.',
     },
     lesson: {
       en: 'Fixed-point arithmetic has no ±∞: overflow either saturates (clamps magnitude) or wraps modulo 2ⁿ (flips sign). Always size intermediate accumulators or rescale before multiplying.',
-      cs: 'Aritmetika s pevnou řádovou čárkou nemá ±∞: přetečení buď saturuje (omezí velikost), nebo přeteče modulo 2ⁿ (změní znaménko). Mezivýsledky vyžadují širší akumulátor nebo včasné přeškálování.',
+      cs: 'Aritmetika s pevnou řádovou čárkou nemá ±∞: při přetečení se hodnota buď omezí na mezní hodnotu (saturace), nebo přeteče modulo 2ⁿ (změní znaménko). Mezivýsledky vyžadují širší akumulátor nebo včasné přeškálování.',
     },
     look: {
       en: 'enable Q16.16 in Formats and toggle Fixed-point overflow between Saturation and Wraparound to watch sum and mid change.',
-      cs: 'zapněte Q16.16 ve Formátech a přepínejte přetečení pevné čárky mezi Saturací a Přetečením mod 2ⁿ u kroků sum a mid.',
+      cs: 'zapněte Q16.16 ve Formátech a u kroků sum a mid přepínejte přetečení v pevné řádové čárce mezi volbami Saturace a Dvojkový doplněk (mod 2ⁿ).',
     },
     variables: [{ name: 'a', value: '20000' }, { name: 'b', value: '20000' }],
     program: 'sum = a + b\nmid = (a * 2) / 4\nsmall = 0.001 * 0.001',

@@ -51,7 +51,7 @@ operaci po operaci, a ukáže, kde a proč se výsledky rozcházejí.
     podle kterého z nich plyne směr zaokrouhlení
   * **formální zápis:** x̂ = RN₅₃(a + b) = (a + b)(1 + δ) se skutečným δ a jeho mezí u = 2⁻ᵖ (u subnormálních
     čísel absolutní chyba η); srovnání s n-bitovými celými čísly, kde a ⊕ b = (a + b) mod 2ⁿ
-  * panel lze rozšířit tažením levého okraje (nebo tlačítkem „vejít bity“), aby se 64bitový zápis vešel na řádek
+  * panel lze rozšířit tažením levého okraje (nebo tlačítkem „zobraz bity“), aby se 64bitový zápis vešel na řádek
 * **Diagnóza:** pro každou přiřazenou proměnnou a každý formát, kde se informace ztratila (kroky, které
   stály nejvíc platných číslic, nahromaděné zaokrouhlení, speciální hodnoty), s odkazy na průchod
   přesnostmi a na pohled Úpravy výrazu.
@@ -88,7 +88,7 @@ fma(a, b, -c)                # a·b − c s jediným zaokrouhlením
 sqrt exp ln log10 sin cos tan atan pow(x, y) pi    # v každém formátu správně zaokrouhlené
 c == 0.3                     # porovnání: == != < <= > >=, přesně 1 (pravda) nebo 0 (nepravda)
 abs(c - 0.3) <= 1e-12 * abs(0.3)   # porovnání s tolerancí (1e-12 se hodí pro double; float potřebuje asi 1e-6)
-double(s)                    # přetypování: half bfloat16 float double extended quad
+double(s)                    # přetypování: half bfloat16 float double extended quad decimal64 q16_16 dec18_4
 ```
 Vstupy jsou přesné: `0.1`, `-2.5e-3`, `1/3`, `0x1.8p-2`, `inf`. Vyhodnocuje se striktně zleva
 doprava, jak je napsáno: `a + b + c` znamená `(a + b) + c`.

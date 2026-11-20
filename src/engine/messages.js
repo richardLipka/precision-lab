@@ -48,7 +48,7 @@ export const ENGINE_MESSAGES = {
     'parse.powExponent': 'exponent u ^ musí být celočíselná konstanta (mocnina se rozkládá na násobení)',
     'parse.powTooLarge': 'příliš velký exponent (|n| ≤ 4096)',
     'parse.unknownFn': "neznámá funkce '{name}' (dostupné: {list})",
-    'parse.arity': '{name} očekává {n} argument(y), zadáno {got}',
+    'parse.arity': '{name} očekává jiný počet argumentů (očekáváno: {n}, zadáno: {got})',
     'parse.chainedCmp': "porovnání nelze řetězit ('{op}'); použijte závorky, např. (a < b) == c, nebo dva samostatné testy",
     'eval.tooManySteps': 'Příliš mnoho kroků (limit {max}). Snižte počet opakování nebo exponenty.',
     'eval.badVarName': "Neplatný název proměnné '{name}'",
